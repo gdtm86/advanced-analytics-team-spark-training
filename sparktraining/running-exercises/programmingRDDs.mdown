@@ -1,0 +1,1017 @@
+Programming RDDs
+================
+
+Check to see if the sqlContext and SparkContext started successfully
+
+```
+scala> sc
+res4: org.apache.spark.SparkContext = org.apache.spark.SparkContext@52c1a0c1
+scala> sqlContext
+res5: org.apache.spark.sql.SQLContext = org.apache.spark.sql.hive.HiveContext@714fe7dd
+```
+
+### Creating RDDs
+
+RDDs can be created primarily in two ways
+
+* Parallelizing an exisitng collection
+* referencing a dataset in an existing storage system.
+
+Examples of storage systems supported include.
+
+* HDFS
+* local filesystem
+* Amazon S3
+* HBase
+* Kudu
+* or any data source offering a Hadoop InputFormat
+
+
+#### Creating RDDs: Parallelized Collections
+
+Pallelized collections are created by calling SparkContext's parallelize method on an existing collection in your drive
+program. The elements of the collection are copied to from a distributed dataset that can be oeprated in parallel.
+For example, here is show to create a parallelized collection holding the numbers 1 to 5:
+
+```
+val data = 1 to 100
+data.slice(1,10)
+
+scala> val data = 1 to 100
+data: scala.collection.immutable.Range.Inclusive = Range(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100)
+
+scala> val dataRDD = sc.parallelize(data)
+dataRDD: org.apache.spark.rdd.RDD[Int] = ParallelCollectionRDD[0] at parallelize at <console>:23
+```
+
+Once created, the distributed dataset 'dataRDD' can be operated in parallel. For example, we might call dataRDD.reduce((a,b) => a+ b)
+
+```
+scala> dataRDD.reduce((a,b)=> a + b)
+res7: Int = 5050
+```
+
+One import parameter for parallel collections is the number of partitions to cut the dataset into. Spark will run on task for each partition of the cluster. Typically you want 2-4 partitions for each CPU in your cluster.However, you can also set it manually by passing it as second parameter to parallelize
+
+Note: Some places in the code we use the term 'slices' ( a synonym for partitions) to maintain backward
+compatibility
+
+New Spark 1.6 API has a getNumPartitions method to check the number of partitions
+
+> final def partitions: Array[Partition]
+Get the array of partitions of this RDD, taking into account whether the RDD is checkpointed or not.
+
+The sc.parallize uses the defaultParallelism
+
+>def parallelize[T: ClassTag](
+      seq: Seq[T],
+      numSlices: Int = defaultParallelism)
+
+spark.default.parallelism :
+Local mode: number of cores on the local machine
+
+Mesos fine grained mode: 8
+
+Others: total number of cores on all executor nodes or 2, whichever is larger
+
+*I had 4 executors with 2 cores for each = 8 partitions*
+
+```
+scala> dataRDD.partitions
+res11: Array[org.apache.spark.Partition] = Array(org.apache.spark.rdd.ParallelCollectionPartition@691, org.apache.spark.rdd.ParallelCollectionPartition@692, org.apache.spark.rdd.ParallelCollectionPartition@693, org.apache.spark.rdd.ParallelCollectionPartition@694, org.apache.spark.rdd.ParallelCollectionPartition@695, org.apache.spark.rdd.ParallelCollectionPartition@696, org.apache.spark.rdd.ParallelCollectionPartition@697, org.apache.spark.rdd.ParallelCollectionPartition@698)
+
+scala> dataRDD.partitions.length
+res12: Int = 8
+
+scala> val dataRDD1 = sc.parallelize(data, 10)
+dataRDD1: org.apache.spark.rdd.RDD[Int] = ParallelCollectionRDD[1] at parallelize at <console>:23
+
+scala> dataRDD1.partitions.length
+res13: Int = 10
+```
+
+Compare the number of tasks that were run on the dataRDD with 8 partitions with different number of partitions
+
+* Let's first run the count on the rdd we created first dataRDD
+
+Here we should see that spark only runs 8 tasks when we run count()
+
+* Now let's run the count on the rdd we created second dataRDD1
+
+Here we see that Spark creates 10 tasks when we run the count().Go the Spark webUI and check the number of tasks for both the below commands
+
+Note: Spark 1.6 also has a new range() function to create a parallelized RDD from a range
+
+```
+scala> dataRDD.count()
+res14: Long = 100
+
+scala> dataRDD1.count()
+res15: Long = 100
+```
+#### Creating RDDs: External Datasets
+
+Spark can create distributed datasets from any storage source by Hadoop, including your local file system, HDFS, Cassandra, HBase, Amazon S3, etc
+
+Spark supports creating the RDDs from following file formats.
+
+* Text Files
+* Sequence Files
+* BinaryFiles (Experimental)
+* any other Hadoop InputFormat
+
+#### Text files
+Text file RDDs can be created using SparkContext's textFile method. This method takes an URI for the file (either local path on the matching, or a hdfs://, s3n://, etc URI) and reads it as a collection of lines. Here is an example of loading a text file containing apache access logs.
+
+Once created, acccessLogsRDD can be acted on by the dataset operations. For example, we can add up the sizes of all the lines using map and reduce operations as follows:
+
+```
+scala> val accessLogsRDD = sc.textFile("/user/gmedasani/data/access_log/access_log_1")
+accessLogsRDD: org.apache.spark.rdd.RDD[String] = MapPartitionsRDD[4] at textFile at <console>:21
+
+scala> accessLogsRDD.map( logline => logline.length).reduce((a,b) => a+b)
+res2: Int = 171357
+```
+
+All of Spark's file-based input methods, including textFile, support running on directories, compressed files, and wildcards as well. For example, you can use textFile ("my/directory"),textFile("/my/directory/*.txt"), and textFile("/my/directory/*.gz")
+
+The textFile method also takes an optional second argument for controlling the number of partitions of the file. By default, spark creates on partition for each block of the file (blocks being 64 MB by default in HDFS),but you can also ask for higher number of partitions by passing a larger value.
+
+Note that you cannot have fewer partitions than blocks.
+
+```
+scala> val accessLogsRDD1 = sc.textFile("/user/gmedasani/data/access_log")
+accessLogsRDD1: org.apache.spark.rdd.RDD[String] = MapPartitionsRDD[7] at textFile at <console>:21
+
+scala> accessLogsRDD1.map( logline => logline.length).reduce((a,b) => a+b)
+res3: Int = 856785
+```
+
+#### Hadoop InputFormat
+
+We will look at some examples of loading other common formats of files that are stored in HDFS for example Avro, Parquet.
+For this we will use SparkContext's newApiHadoopFile('')
+
+### Save RDDs
+
+Once we perform some operations and ready to save our datasets, we can use some of the follwing functions to save the
+datasets.
+
+* saveAsTextFile
+* saveAsSequenceFile
+* saveAsPickleFile
+* saveAsNewAPIHadoopFile
+
+Let's see an example of saving the accessLogsRDD1 as a text file using the saveAsTextFile() operation shown below. You can pass in a compressionCodecClass as an option.
+
+>saveAsTextFile(path, compressionCodecClass=None)
+>>Save this RDD as a text file, using string representations of elements.
+>>Parameters:
+>>path – path to text file
+compressionCodecClass – (None by default) string i.e. “org.apache.hadoop.io.compress.GzipCodec”
+
+```
+scala> accessLogsRDD1.saveAsTextFile("/user/gmedasani/data/accessLogs-output/")
+
+scala>
+
+[gmedasani@intel-1 intel]$ hdfs dfs -ls data/accessLogs-output
+Found 6 items
+-rw-r--r--   3 gmedasani gmedasani          0 2016-03-11 08:04 data/accessLogs-output/_SUCCESS
+-rw-r--r--   3 gmedasani gmedasani     172903 2016-03-11 08:04 data/accessLogs-output/part-00000
+-rw-r--r--   3 gmedasani gmedasani     172903 2016-03-11 08:04 data/accessLogs-output/part-00001
+-rw-r--r--   3 gmedasani gmedasani     172903 2016-03-11 08:04 data/accessLogs-output/part-00002
+-rw-r--r--   3 gmedasani gmedasani     172903 2016-03-11 08:04 data/accessLogs-output/part-00003
+-rw-r--r--   3 gmedasani gmedasani     172903 2016-03-11 08:04 data/accessLogs-output/part-00004
+[gmedasani@intel-1 intel]$
+
+```
+
+### RDD operations
+
+RDDs support two types of operations: Transformations: which create a new dataset from an
+existing one, and actions, which return a value to the driver program after running a computation
+on the dataset.
+
+#### Transformations
+
+Transformations create a new dataset from an existing one
+
+All transformations in Spark are lazy, in that they do not compute their results right away. Instead, they just remember the transformations applied to some base dataset (e.g.a file).
+
+This design enables Spark to run more efficiently - for example, we can realize that a dataset created through map
+will be used in a reduce and return only the result of the reduce to the driver, rather than the larger mapped dataset.
+
+By default, each transformed RDD may be recomputed each time you run an action on it.
+
+However, you may also persist an RDD in memory using persist() or cache() methods, in which case Spark will keep the
+elements around on the cluster for much faster access the next time you query it. More on this later.
+
+Now let's look at the various transformations that are available in RDDs. We will use our access logs RDD - accessLogsRDD.
+
+Here is a sample of the apache access logs
+```
+64.242.88.10 - - [07/Mar/2004:16:05:49 -0800] "GET /twiki/bin/edit/Main/Double_bounce_sender?topicparent=Main.ConfigurationVariables HTTP/1.1" 401 12846
+64.242.88.10 - - [07/Mar/2004:16:06:51 -0800] "GET /twiki/bin/rdiff/TWiki/NewUserTemplate?rev1=1.3&rev2=1.2 HTTP/1.1" 200 4523
+64.242.88.10 - - [07/Mar/2004:16:10:02 -0800] "GET /mailman/listinfo/hsdivision HTTP/1.1" 200 6291
+```
+
+> map(func)
+>> Meaning: Return a new distributed dataset formed by passing each element of the source through a function func
+
+Let's run a map function on the accessLogsRDD to extract different fields of the logs.
+
+https://github.com/alvinj/ScalaApacheAccessLogParser/blob/master/src/main/scala/AccessLogParser.scala
+
+```
+[gmedasani@intel-1 intel]$ cat ApacheLogParserUtil.scala
+import java.util.regex.{Pattern}
+
+object ApacheLogParserUtil extends Serializable {
+
+    val ddd = "\\d{1,3}"
+    val ip = s"($ddd\\.$ddd\\.$ddd\\.$ddd)?"  // like `123.456.7.89`
+    val client = "(\\S+)"                     // '\S' is 'non-whitespace character'
+    val user = "(\\S+)"
+    val dateTime = "(\\[.+?\\])"              // like `[21/Jul/2009:02:48:13 -0700]`
+    val request = "\"(.*?)\""                 // any number of any character, reluctant
+    val status = "(\\d{3})"
+    val bytes = "(\\S+)"
+    val regex = s"$ip $client $user $dateTime $request $status $bytes"
+
+    def parseRecord(record: String):(String,String,String,String,String,String,String)= {
+      val compiledPattern = Pattern.compile(regex)
+      val matcher = compiledPattern.matcher(record)
+      if (matcher.find) {
+         (matcher.group(1),
+          matcher.group(2),
+          matcher.group(3),
+          matcher.group(4),
+          matcher.group(5),
+          matcher.group(6),
+          matcher.group(7))
+      } else {
+          (" "," "," "," "," "," "," ")
+      }
+    }
+}
+```
+
+```
+scala> :load /data/intel/ApacheLogParserUtil.scala
+Loading /data/intel/ApacheLogParserUtil.scala...
+import java.util.regex.Pattern
+defined module ApacheLogParserUtil
+```
+
+Testing the apache log parser function
+
+```
+val logrecord1 = """64.242.88.10 - - [07/Mar/2004:16:05:49 -0800] "GET /twiki/bin/edit/Main/Double_bounce_sender?topicparent=Main.ConfigurationVariables HTTP/1.1" 401 12846"""
+val logrecord2 = """64.242.88.10 - - [07/Mar/2004:16:06:51 -0800] "GET /twiki/bin/rdiff/TWiki/NewUserTemplate?rev1=1.3&rev2=1.2 HTTP/1.1" 200 4523"""
+val logrecord3 = """64.242.88.10 - - [07/Mar/2004:16:10:02 -0800] "GET /mailman/listinfo/hsdivision HTTP/1.1" 200 6291"""
+
+scala> ApacheLogParserUtil.parseRecord(logrecord1)
+res13: (String, String, String, String, String, String, String) = (64.242.88.10,-,-,[07/Mar/2004:16:05:49 -0800],GET /twiki/bin/edit/Main/Double_bounce_sender?topicparent=Main.ConfigurationVariables HTTP/1.1,401,12846)
+
+scala> ApacheLogParserUtil.parseRecord(logrecord2)
+res14: (String, String, String, String, String, String, String) = (64.242.88.10,-,-,[07/Mar/2004:16:06:51 -0800],GET /twiki/bin/rdiff/TWiki/NewUserTemplate?rev1=1.3&rev2=1.2 HTTP/1.1,200,4523)
+
+scala> ApacheLogParserUtil.parseRecord(logrecord3)
+res15: (String, String, String, String, String, String, String) = (64.242.88.10,-,-,[07/Mar/2004:16:10:02 -0800],GET /mailman/listinfo/hsdivision HTTP/1.1,200,6291)
+```
+
+Now let's parse all the records in the dataset using the above function.
+```
+val parsedApacheLogsRDD = accessLogsRDD.map(logline => ApacheLogParserUtil.parseRecord(logline))
+```
+
+Note here that transformations are lazily evaluated and are only evaluated when actions are run
+
+```
+scala> parsedApacheLogsRDD.take(10)
+res12: Array[(String, String, String, String, String, String, String)] = Array((64.242.88.10,-,-,[07/Mar/2004:16:05:49 -0800],GET /twiki/bin/edit/Main/Double_bounce_sender?topicparent=Main.ConfigurationVariables HTTP/1.1,401,12846), (64.242.88.10,-,-,[07/Mar/2004:16:06:51 -0800],GET /twiki/bin/rdiff/TWiki/NewUserTemplate?rev1=1.3&rev2=1.2 HTTP/1.1,200,4523), (64.242.88.10,-,-,[07/Mar/2004:16:10:02 -0800],GET /mailman/listinfo/hsdivision HTTP/1.1,200,6291), (64.242.88.10,-,-,[07/Mar/2004:16:11:58 -0800],GET /twiki/bin/view/TWiki/WikiSyntax HTTP/1.1,200,7352), (64.242.88.10,-,-,[07/Mar/2004:16:20:55 -0800],GET /twiki/bin/view/Main/DCCAndPostFix HTTP/1.1,200,5253), (64.242.88.10,-,-,[07/Mar/2004:16:23:12 -0800],GET /twiki/bin/oops/TWiki/AppendixFileSystem?template=oopsmore&param1=1.12&para...
+scala>
+```
+
+> filter(func)
+>> Meaning: Return a new dataset formed by selecting those elements of the source on which function returns true.
+Let's filter the parsedApacheLogsRDD so the filtered RDD only has entries with successful HTTP response code 200
+
+```
+val successfulRequestsRDD = parsedApacheLogsRDD.filter(
+                            record => record._6.toInt == 200)
+
+scala> parsedApacheLogsRDD.count()
+res23: Long = 1546
+scala> accessLogsRDD.count()
+res24: Long = 1546
+scala> successfulRequestsRDD.take(1)
+res26: Array[(String, String, String, String, String, String, String)] = Array((64.242.88.10,-,-,[07/Mar/2004:16:06:51 -0800],GET /twiki/bin/rdiff/TWiki/NewUserTemplate?rev1=1.3&rev2=1.2 HTTP/1.1,200,4523))
+scala> successfulRequestsRDD.count()
+res25: Long = 1274
+```
+
+> flatMap(func):
+>> Meaning: Similar to map, but each input item can be mapped to 0 or more output items (so
+ func should return a Seq rather than a single item).
+
+Here we can see the difference between map and flatMap()
+
+```
+scala> successfulRequestsRDD.map(record => record._4.split(":")).take(2)
+res29: Array[Array[String]] = Array(Array([07/Mar/2004, 16, 06, 51 -0800]), Array([07/Mar/2004, 16, 10, 02 -0800]))
+
+scala> successfulRequestsRDD.flatMap(record => record._4.split(":")).take(10)
+res31: Array[String] = Array([07/Mar/2004, 16, 06, 51 -0800], [07/Mar/2004, 16, 10, 02 -0800], [07/Mar/2004, 16)
+```
+
+>mapPartitions(func)
+>>Meaning:Similar to map, but runs separately on each partition (block) of the RDD, so func must be of
+type Iterator => Iterator when running on an RDD of type T
+
+We can see that we have 2 partitions in our successfulRequestsRDD with 1274 records. We will count the number of records in each partition.
+
+```
+scala> successfulRequestsRDD.partitions.length
+res33: Int = 2
+
+scala> successfulRequestsRDD.count()
+res1: Long = 1274
+
+scala> successfulRequestsRDD.mapPartitions(iterator => {
+     | val myList = iterator.toList
+     | List(myList.length).iterator}).collect()
+res6: Array[Int] = Array(616, 658)
+
+scala> 616+658
+res5: Int = 1274
+```
+
+> mapPartitionsWithIndex(func)
+
+```
+Meaning: Similar to mapPartitions, but also provides func with an integer value representing the index of the partition,
+so func must be of type (Int, Iterator<T>) => Iterator<U> when running on an RDD of type T.
+```
+
+Here we will look at the same example above, but print the results with the partition index
+
+```
+scala> successfulRequestsRDD.mapPartitionsWithIndex((index,iterator) => {
+     | val myList = iterator.toList
+     | List((index,myList.length)).iterator}).collect()
+res8: Array[(Int, Int)] = Array((0,616), (1,658))
+```
+
+> sample(withReplacement, fraction, seed)
+>> Meaning: Sample a fraction of the data, with or without replacement, using a given random number generator seed
+
+```
+scala> val sampleLogsRDD = successfulRequestsRDD.sample(false,0.2,seed=10)
+sampleLogsRDD: org.apache.spark.rdd.RDD[(String, String, String, String, String, String, String)] = PartitionwiseSampledRDD[20] at sample at <console>:30
+
+scala> sampleLogsRDD.count()
+res20: Long = 263
+
+scala> 0.20 * 1274
+res21: Double = 254.8
+```
+
+#### Psedudo Set Operations
+
+RDDs support many of the operations of mathematical sets, such as union and intersection even when RDDs
+themselves are not properly sets. All these operations require that RDDs being operated on are of the same type.
+
+* union(otherDataset): Return a new dataset that contains the union of the elements in the source dataset and the argument.
+
+* intersection(otherDataset):Return a new RDD that contains the intersection of elements in the source dataset and the argument.
+
+* distinct([numTasks]): Return a new dataset that contains the distinct elements of the source dataset
+
+* subtract(otherDataset):Return an RDD with the elements from this that are not in other.
+
+* cartesian(otherDataset): When called on datasets of types T and U, returns a dataset of (T, U) pairs (all pairs of elements).
+
+```
+scala> val rdd1 = sc.parallelize(List("lion", "tiger", "tiger", "peacock", "horse"))
+rdd1: org.apache.spark.rdd.RDD[String] = ParallelCollectionRDD[33] at parallelize at :21
+scala> val rdd2 = sc.parallelize(List("lion", "tiger"))
+rdd2: org.apache.spark.rdd.RDD[String] = ParallelCollectionRDD[34] at parallelize at :21
+
+scala> // distinct(): Returns distinct element in the RDD
+scala> // Warning   :Involves shuffling of data over N/W
+scala> rdd1.distinct().collect()
+res20: Array[String] = Array(peacock, lion, horse, tiger)
+
+scala> // union() : Returns an RDD containing data from both sources
+scala> // Note    : Unlike the Mathematical Union, duplicates are
+scala> //            not removed
+scala> rdd1.union(rdd2).collect()
+res22: Array[String] = Array(lion, tiger, tiger, peacock, horse, lion, tiger)
+
+scala> // intersection() :  Returns elements that are common b/w both
+scala> //                   RDDs. Also removed Duplicates
+scala> // Warning        :  Involves shuffling & has worst performance
+scala> rdd1.intersection(rdd2).collect();
+res24: Array[String] = Array(lion, tiger)
+
+scala> // subtract() : Returns only elements that are present in the
+scala> //              first RDD
+scala> rdd1.subtract(rdd2).collect()
+res26: Array[String] = Array(peacock, horse)
+
+scala> // cartesian(): Provides cartesian product b/w 2 RDDs
+scala> // Warning    : Is very expensive for large RDDs
+scala> rdd1.cartesian(rdd2).collect();
+res28: Array[(String, String)] = Array((lion,lion), (lion,tiger), (tiger,lion),
+(tiger,tiger), (tiger,lion), (tiger,tiger), (peacock,lion), (peacock,tiger), (horse,lion), (horse,tiger))
+```
+> pipe(command, [envVars])
+>> Meaning:Pipe each partition of the RDD through a shell command, e.g. a Perl or bash script. RDD elements are written to the process's stdin and lines output to its stdout are returned as an RDD of strings.
+
+Note: The script should be on all the nodes in the cluster. Script takes elements and just prints the Uppercase of first letter of the each element in RDD.
+
+```
+[root@intel-6 ~]# cat /data/intel/echo.sh
+#!/bin/sh
+while read LINE; do
+   echo ${LINE} | awk -F '' '{print $1}' | tr "[:lower:]" "[:upper:]"
+done
+[root@intel-6 ~]#
+```
+```
+scala> val rdd1 = sc.parallelize(List("lion", "tiger", "tiger", "peacock", "horse"))
+rdd1: org.apache.spark.rdd.RDD[String] = ParallelCollectionRDD[43] at parallelize at <console>:22
+
+scala> val scriptPath = "/data/intel/echo.sh"
+scriptPath: String = /data/intel/echo.sh
+
+scala> val pipeRDD = rdd1.pipe(scriptPath)
+pipeRDD: org.apache.spark.rdd.RDD[String] = PipedRDD[44] at pipe at <console>:26
+
+scala> pipeRDD.collect()
+res36: Array[String] = Array(L, T, T, P, H)
+```
+
+>coalesce(numPartitions)
+>>Meaning:Decrease the number of partitions in the RDD to numPartitions. Useful for running operations more efficiently after filtering down a large dataset.
+
+>repartition(numPartitions)
+>>Meaning:Reshuffle the data in the RDD randomly to create either more or fewer partitions and balance it across them.
+This always shuffles all data over the network.
+
+Note : Use coalesce() only when the new partition size is less than the current partition size of the RDD
+
+```
+scala> val data = 1 to 10000
+data: scala.collection.immutable.Range.Inclusive = Range(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166, 167, 168, 169, 170...
+
+scala> val dataRDD = sc.parallelize(data)
+dataRDD: org.apache.spark.rdd.RDD[Int] = ParallelCollectionRDD[45] at parallelize at <console>:24
+
+scala> dataRDD.partitions.length
+res41: Int = 8
+
+scala> dataRDD.coalesce(6).partitions.length
+res42: Int = 6
+
+//As we can see here, if we use a greater number than the number of partitions in RDD, it returns the original number of
+//partitions as before.
+scala> dataRDD.coalesce(10).partitions.length
+res43: Int = 8
+
+scala> dataRDD.coalesce(12).partitions.length
+res44: Int = 8
+
+scala> dataRDD.coalesce(4).partitions.length
+res45: Int = 4
+
+scala> dataRDD.repartition(6).partitions.length
+res46: Int = 6
+
+scala> dataRDD.repartition(10).partitions.length
+res47: Int = 10
+
+scala> dataRDD.repartition(12).partitions.length
+res48: Int = 12
+```
+
+#### RDD Operations: Actions
+
+Here are some of the common actions supported by Spark.
+
+* reduce()
+* collect()
+* count()
+* first()
+* take(n)
+* takeSample(withReplacement, num, [seed])
+* takeOrdered(n,[ordering])
+* saveAsTextFile(path)
+* saveAsSequenceFile(path) // Only in Scala and Java
+* saveAsObjectFile(path) // Only in Scala and Java
+* foreach()
+* treeReduce()
+* treeAggregate()
+
+>reduce()
+>> Meaning: takes a function Type, which takes 2 elements of RDD Element Type as argument & returns the Element of same type
+
+```
+scala> successfulRequestsRDD.take(2)
+res49: Array[(String, String, String, String, String, String, String)] =
+Array((64.242.88.10,-,-,[07/Mar/2004:16:06:51 -0800],GET /twiki/bin/rdiff/TWiki/NewUserTemplate?rev1=1.3&rev2=1.2 HTTP/1.1,200,4523), (64.242.88.10,-,-,[07/Mar/2004:16:10:02 -0800],GET /mailman/listinfo/hsdivision HTTP/1.1,200,6291))
+
+scala> val nuberOfBytesRDD = successfulRequestsRDD.map(record => record._7.toInt)
+nuberOfBytesRDD: org.apache.spark.rdd.RDD[Int] = MapPartitionsRDD[64] at map at <console>:30
+
+scala> nuberOfBytesRDD.take(10)
+res51: Array[Int] = Array(4523, 6291, 7352, 5253, 11382, 4924, 3732, 40520, 6379, 46373)
+```
+
+Total number of bytes recieved from all the successful requests
+
+```
+scala> successfulRequestsRDD.count()
+res53: Long = 1274
+
+scala> val nuberOfBytesRDD = successfulRequestsRDD.filter(record  => record._7 != "-").map(record => record._7.toInt)
+nuberOfBytesRDD: org.apache.spark.rdd.RDD[Int] = MapPartitionsRDD[66] at map at <console>:30
+
+scala> nuberOfBytesRDD.count()
+res54: Long = 1273
+
+scala> val totalNumberOfBytesReceived = nuberOfBytesRDD.reduce((value1,value2) => value1+value2)
+totalNumberOfBytesReceived: Int = 9360249
+```
+
+>fold():
+>> Is similar to reduce except that it takes an 'Zero value'(Think of it as a kind of initial value)
+which will be used in the initial call on each Partition
+
+```
+scala> nuberOfBytesRDD.partitions.length
+res55: Int = 2
+
+scala> val totalNumberOfBytesReceivedWithFold  = nuberOfBytesRDD.fold(10)((value1,value2) => value1+value2)
+totalNumberOfBytesReceivedWithFold: Int = 9360279
+```
+Here we can see that the result is increased by number 30:
+
+*2 partitions * 10 - add 20*
+*for final result again - add 10*
+*Total of 30 was added to the previous result from reduce.*
+
+```
+scala> totalNumberOfBytesReceivedWithFold - totalNumberOfBytesReceived
+res56: Int = 30
+```
+
+Disadvantage : This disadvantage of both reduce() & fold() is, the return type should be the same as the RDD element type.
+aggregate() function can be used to avoid this limitation.
+
+```
+scala> val totalNumberOfBytesReceivedWithFold  = nuberOfBytesRDD.fold(10.0)((value1,value2) => value1+value2)
+<console>:32: error: type mismatch;
+ found   : Double(10.0)
+ required: Int
+       val totalNumberOfBytesReceivedWithFold  = nuberOfBytesRDD.fold(10.0)((value1,value2) => value1+value2)
+```
+
+As we can see above we can only pass an int.
+
+>aggregate()
+>> Compared to reduce() & fold(), the aggregate() function has the advantage, it can return different Type vis-a-vis the RDD Element Type(ie Input Element type)
+
+```
+scala> nuberOfBytesRDD
+res57: org.apache.spark.rdd.RDD[Int] = MapPartitionsRDD[66] at map at <console>:30
+
+scala>
+scala> val totalNumberOfBytesReceivedWithAggregate = nuberOfBytesRDD.aggregate(0.0)((acc,value) => (acc+value),
+     | (acc1, acc2) => (acc1 + acc2)
+     | )
+totalNumberOfBytesReceivedWithAggregate: Double = 9360249.0
+
+//Now with a different Initial Zero Value
+scala> val totalNumberOfBytesReceivedWithAggregate = nuberOfBytesRDD.aggregate(10.0)((acc,value) => (acc+value),
+     | (acc1, acc2) => (acc1 + acc2)
+     | )
+totalNumberOfBytesReceivedWithAggregate: Double = 9360279.0
+```
+
+> collect()
+>> Return all the elements of the dataset as an array at the driver program. This is usually useful after a filter or
+other operation that returns a sufficiently small subset of the data.
+
+```
+scala> nuberOfBytesRDD.count()
+res60: Long = 1273
+
+scala> val numberOfBytesArray = nuberOfBytesRDD.collect()
+numberOfBytesArray: Array[Int] = Array(4523, 6291, 7352, 5253, 11382, 4924, 3732, 40520, 6379, 46373, 4140, 3853, 3686,
+....
+
+scala> numberOfBytesArray.length
+res59: Int = 1273
+
+scala> numberOfBytesArray.slice(0,4)
+res66: Array[Int] = Array(4523, 6291, 7352, 5253)
+```
+
+>count()
+>>Meaning: Return the number of elements in the dataset as a Long.
+
+```
+scala> nuberOfBytesRDD.count()
+res60: Long = 1273
+```
+
+>first()
+>>Return the first element of the dataset (similar to take(1)).
+
+```
+scala> nuberOfBytesRDD.first()
+res67: Int = 4523
+```
+
+>take(n)
+> Return an array with the first n elements of the dataset.
+
+Take the first num elements of the RDD. It works by first scanning one partition, and use the results from that
+partition to estimate the number of additional partitions needed to satisfy the limit.
+
+```
+scala> nuberOfBytesRDD.take(10)
+res68: Array[Int] = Array(4523, 6291, 7352, 5253, 11382, 4924, 3732, 40520, 6379, 46373)
+```
+
+>takeSample(withReplacement, num, [seed])
+>>Return an array with a random sample of num elements of the dataset, with or without replacement, optionally pre-specifying a random number generator seed.
+
+```
+scala> val inputrdd = sc.parallelize{ Seq(10, 4, 5, 3, 11, 2, 6) }
+inputrdd: org.apache.spark.rdd.RDD[Int] = ParallelCollectionRDD[9] at parallelize at <console>:22
+
+scala> inputrdd.takeSample(false, 3,1)
+res9: Array[Int] = Array(6, 3, 10)
+
+scala> inputrdd.takeSample(false, 3,1)
+res10: Array[Int] = Array(6, 3, 10)
+
+scala> inputrdd.takeSample(false, 3,2)
+res11: Array[Int] = Array(5, 3, 4)
+
+scala> inputrdd.takeSample(false, 3,1)
+res12: Array[Int] = Array(6, 3, 10)
+
+scala> inputrdd.takeSample(true, 3,1)
+res13: Array[Int] = Array(2, 4, 3)
+
+scala> inputrdd.takeSample(true, 5,1)
+res14: Array[Int] = Array(2, 2, 5, 6, 2)
+
+scala> inputrdd.takeSample(false, 5,1)
+res15: Array[Int] = Array(6, 3, 10, 2, 4)
+
+scala> inputrdd.takeSample(true, 5,1)
+res16: Array[Int] = Array(2, 2, 5, 6, 2)
+
+scala> inputrdd.takeSample(false, 5,1)
+res17: Array[Int] = Array(6, 3, 10, 2, 4)
+```
+
+>top()
+>> def top(num: Int)(implicit ord: Ordering[T]): Array[T]
+Returns the top k (largest) elements from this RDD as defined by the specified implicit Ordering[T]. This does the opposite of takeOrdered. For example:
+
+```
+scala> inputrdd.top(1)
+res71: Array[Int] = Array(11)
+
+scala> inputrdd.top(3)
+res72: Array[Int] = Array(11, 10, 6)
+```
+
+Now let's reverse the ordering to ascending and see the results of top()
+
+```
+scala> :paste
+// Entering paste mode (ctrl-D to finish)
+
+implicit val sortIntegersAscending = new Ordering[Int] {
+override def compare(a: Int, b: Int) = {
+if(a > b) {
+-1
+}else{
++1
+}
+}
+}
+
+// Exiting paste mode, now interpreting.
+
+sortIntegersAscending: Ordering[Int] = $iwC$$iwC$$iwC$$iwC$$iwC$$iwC$$iwC$$iwC$$anon$1@39aa0f16
+
+scala> inputrdd.top(1)
+res74: Array[Int] = Array(2)
+
+scala> inputrdd.top(3)
+res75: Array[Int] = Array(2, 3, 4)
+```
+
+>takeOrdered(n, [ordering])
+>>Return the first n elements of the RDD using either their natural order or a custom comparator.
+
+This is opposite to top()
+
+```
+scala> inputrdd.takeOrdered(2)
+res77: Array[Int] = Array(2, 3)
+
+scala> inputrdd.takeOrdered(3)
+res78: Array[Int] = Array(2, 3, 4)
+
+//Now let's reverse the ordering to descending and see the results of takeOrdered()
+
+scala> :paste
+// Entering paste mode (ctrl-D to finish)
+
+implicit val sortIntegersAscending = new Ordering[Int] {
+override def compare(a: Int, b: Int) = {
+if(a > b) {
+-1
+}else{
++1
+}
+}
+}
+
+// Exiting paste mode, now interpreting.
+
+sortIntegersAscending: Ordering[Int] = $iwC$$iwC$$iwC$$iwC$$iwC$$iwC$$iwC$$iwC$$iwC$$anon$1@697227b2
+
+scala> inputrdd.takeOrdered(2)
+res79: Array[Int] = Array(11, 10)
+
+scala> inputrdd.takeOrdered(3)
+res80: Array[Int] = Array(11, 10, 6)
+```
+
+>foreach(func):
+>>Run a function func on each element of the dataset. This is usually done for side effects such as updating an
+Accumulator or interacting with external storage systems.
+
+Note: modifying variables other than Accumulators outside of the foreach() may result in undefined behavior.
+See Understanding closures for more details.
+
+It can be used in situations, where we do not want to return any result, but want to initiate a computation.
+
+```
+scala> val testData=Array(1,2,3)
+testData: Array[Int] = Array(1, 2, 3)
+
+scala> val inputrdd = sc.parallelize(testData)
+inputrdd: org.apache.spark.rdd.RDD[Int] = ParallelCollectionRDD[0] at parallelize at <console>:23
+
+scala> inputrdd.foreach(println)
+```
+Here the results are printed to the stdout on the executor stdout.
+
+> foreachPartition()
+>> def foreachPartition(f: (Iterator[T]) ⇒ Unit): Unit
+Applies a function f to each partition of this RDD.
+
+Note: There is really not that much of a difference between foreach and foreachPartition. Under the covers, all that foreach is doing is calling the iterator's foreach using the provided function. foreachPartition just gives you the opportunity to do something outside of the looping of the iterator, usually something expensive like spinning up a database connection or something along those lines.
+
+So, if you don't have anything that could be done once for each node's iterator and reused throughout, then I would suggest using foreach for improved clarity and reduced complexity.
+
+```
+scala> val b = sc.parallelize(List(1, 2, 3, 4, 5, 6, 7, 8, 9), 3)
+b: org.apache.spark.rdd.RDD[Int] = ParallelCollectionRDD[3] at parallelize at <console>:21
+
+scala> b.foreachPartition(x => println(x.reduce(_ + _)))
+
+// Following will be printed in the
+6
+15
+24
+
+// As we can see that sum is equal to the sum of all the elements
+scala> val it = Iterator(1, 2, 3, 4, 5, 6, 7, 8, 9)
+it: Iterator[Int] = non-empty iterator
+
+scala> it.reduce(_+_)
+res8: Int = 45
+
+scala> 24+15+6
+res9: Int = 45
+```
+>countByValue()
+>>Return the count of each unique value in this RDD as a local map of (value, count) pairs.
+
+Note that this method should only be used if the resulting map is expected to be small,
+as the whole thing is loaded into the driver's memory. To handle very large results, consider using rdd.map(x => (x, 1L)). reduceByKey(_ + _), which returns an RDD[T, Long] instead of a map.
+
+```
+scala> val ipAddressRDD = successfulRequestsRDD.map(record => record._1)
+ipAddressRDD: org.apache.spark.rdd.RDD[String] = MapPartitionsRDD[23] at map at <console>:30
+
+scala> ipAddressRDD.toDebugString
+res54: String =
+(2) MapPartitionsRDD[23] at map at <console>:30 []
+ |  MapPartitionsRDD[13] at filter at <console>:28 []
+ |  MapPartitionsRDD[12] at map at <console>:26 []
+ |  MapPartitionsRDD[11] at textFile at <console>:21 []
+ |  /user/gmedasani/data/access_log/access_log_1 HadoopRDD[10] at textFile at <console>:21 []
+
+scala> ipAddressRDD.take(2)
+res55: Array[String] = Array(64.242.88.10, 64.242.88.10)
+
+scala> val ipaddressMap = ipAddressRDD.countByValue()
+ipaddressMap: scala.collection.Map[String,Long] = Map(null -> 647, 203.147.138.233 -> 13, 212.92.37.62 -> 14, 142.27.64.35 -> 2, 61.165.64.6 -> 4, 64.242.88.10 -> 340, 66.213.206.2 -> 1, 4.37.97.186 -> 1, 216.139.185.45 -> 1, 212.21.228.26 -> 1, 145.253.208.9 -> 6, 219.95.17.51 -> 1, 200.222.33.33 -> 1, 67.131.107.5 -> 3, 195.246.13.119 -> 11, 64.246.94.152 -> 1, 195.11.231.210 -> 1, 64.246.94.141 -> 1, 208.247.148.12 -> 4, 207.195.59.160 -> 14, 10.0.0.153 -> 187, 194.151.73.43 -> 4, 61.9.4.61 -> 1, 213.181.81.4 -> 1, 12.22.207.235 -> 1, 128.227.88.79 -> 12, 195.230.181.122 -> 1)
+```
+
+Now we can order the Sequence in descending order of the number of requests from each ip address
+
+```
+scala> val ipSeq = ipaddressMap.toSeq.sortWith(_._2 > _._2)
+ipSeq: Seq[(String, Long)] = ArrayBuffer((null,647), (64.242.88.10,340),
+(10.0.0.153,187), (212.92.37.62,14), (207.195.59.160,14), (203.147.138.233,13),
+(128.227.88.79,12), (195.246.13.119,11), (145.253.208.9,6), (61.165.64.6,4),
+ (208.247.148.12,4), (194.151.73.43,4), (67.131.107.5,3), (142.27.64.35,2),
+ (66.213.206.2,1), (4.37.97.186,1), (216.139.185.45,1), (212.21.228.26,1),
+ (219.95.17.51,1), (200.222.33.33,1), (64.246.94.152,1), (195.11.231.210,1),
+ (64.246.94.141,1),(61.9.4.61,1), (213.181.81.4,1), (12.22.207.235,1),
+ (195.230.181.122,1))
+```
+
+#### Additional Operations
+
+> def isEmpty(): Boolean
+>> returns true if and only if the RDD contains no elements at all. Note that an RDD may be empty even when it has at least 1 partition.
+
+Note: due to complications in the internal implementation,
+this method will raise an exception if called on an RDD of Nothing or Null.
+
+This may be come up in practice because, for example, the type of parallelize(Seq()) is RDD[Nothing].(parallelize(Seq()) should be avoided anyway in favor of parallelize(Seq[T]()).)
+
+```
+scala> val c1:List[String] = List()
+c1: List[String] = List()
+
+scala> val c = sc.parallelize(c1)
+c: org.apache.spark.rdd.RDD[String] = ParallelCollectionRDD[7] at parallelize at <console>:23
+
+scala> c.isEmpty()
+res19: Boolean = true
+```
+
+The following will throw an error since this will create an RDD[Nothing]
+
+```
+scala> val c1 = List()
+c1: List[Nothing] = List()
+
+scala> val c = sc.parallelize(c1)
+c: org.apache.spark.rdd.RDD[Nothing] = ParallelCollectionRDD[8] at parallelize at <console>:23
+
+scala> c.isEmpty()
+org.apache.spark.SparkDriverExecutionException: Execution error
+Caused by: java.lang.ArrayStoreException: [Ljava.lang.Object;
+```
+
+The following also will thrown an error since this will create an RDD[null]
+
+```
+scala> val c1 = List(null)
+c1: List[Null] = List(null)
+
+scala> val c = sc.parallelize(c1)
+c: org.apache.spark.rdd.RDD[Null] = ParallelCollectionRDD[9] at parallelize at <console>:23
+
+scala> c.isEmpty()
+org.apache.spark.SparkDriverExecutionException: Execution error
+Caused by: java.lang.ArrayStoreException: [Ljava.lang.Object;
+```
+
+>var name: String
+>>A friendly name for this RDD
+
+```
+scala> datardd.name
+res21: String = null
+
+scala> datardd.name = "Simple Data RDD"
+datardd.name: String = Simple Data RDD
+
+scala> datardd.name
+res23: String = Simple Data RDD
+```
+
+This will also appear in the RDD.toString() command. Helps us to easily identify the RDDs.
+
+```
+scala> datardd.toString()
+res24: String = Simple Data RDD ParallelCollectionRDD[2] at parallelize at <console>:23
+```
+
+>def toDebugString: String
+>>A description of this RDD and its recursive dependencies for debugging.
+
+```
+scala> val accessLogsRDD = sc.textFile("/user/gmedasani/data/access_log/access_log_1")
+accessLogsRDD: org.apache.spark.rdd.RDD[String] = MapPartitionsRDD[11] at textFile at <console>:21
+
+scala> :load /data/intel/ApacheLogParserUtil.scala
+Loading /data/intel/ApacheLogParserUtil.scala...
+import java.util.regex.Pattern
+defined module ApacheLogParserUtil
+
+scala> val parsedApacheLogsRDD = accessLogsRDD.map(logline => ApacheLogParserUtil.parseRecord(logline))
+parsedApacheLogsRDD: org.apache.spark.rdd.RDD[(String, String, String, String, String, String, String)] = MapPartitionsRDD[12] at map at <console>:26
+
+scala> val successfulRequestsRDD = parsedApacheLogsRDD.filter(
+     |                             record => record._6.toInt == 200)
+successfulRequestsRDD: org.apache.spark.rdd.RDD[(String, String, String, String, String, String, String)] = MapPartitionsRDD[13] at filter at <console>:28
+
+scala> val nuberOfBytesRDD = successfulRequestsRDD.filter(record  => record._7 != "-").map(record => record._7.toInt)
+nuberOfBytesRDD: org.apache.spark.rdd.RDD[Int] = MapPartitionsRDD[16] at map at <console>:30
+
+scala> nuberOfBytesRDD.toDebugString
+res42: String =
+(2) MapPartitionsRDD[16] at map at <console>:30 []
+ |  MapPartitionsRDD[15] at filter at <console>:30 []
+ |  MapPartitionsRDD[13] at filter at <console>:28 []
+ |  MapPartitionsRDD[12] at map at <console>:26 []
+ |  MapPartitionsRDD[11] at textFile at <console>:21 []
+ |  /user/gmedasani/data/access_log/access_log_1 HadoopRDD[10] at textFile at <console>:21 []
+
+```
+
+The lineage output shown above uses indentation levels to show where RDDs are going to be pipelined together into physical stages. RDDs that exist at the same level of identation
+as their parents will be pipelined during physical execution.
+
+
+>def toLocalIterator: Iterator[T]
+>>Return an iterator that contains all of the elements in this RDD.
+
+The iterator will consume as much memory as the largest partition in this RDD.
+
+Note: this results in multiple Spark jobs, and if the input RDD is the result of a wide transformation (e.g. join with different partitioners), to avoid recomputing the input RDD should be cached first.
+
+```
+scala> val numberOfBytesIterator = nuberOfBytesRDD.toLocalIterator
+numberOfBytesIterator: Iterator[Int] = non-empty iterator
+
+scala> numberOfBytesIterator.next()
+res34: Int = 4523
+
+scala> numberOfBytesIterator.next()
+res35: Int = 6291
+
+scala> numberOfBytesIterator.next()
+res36: Int = 7352
+
+scala> numberOfBytesIterator.next()
+res37: Int = 5253
+
+scala> numberOfBytesIterator.next()
+res38: Int = 11382
+
+scala> numberOfBytesIterator.next()
+res39: Int = 4924
+
+scala> numberOfBytesIterator.next()
+res40: Int = 3732
+
+scala> numberOfBytesIterator.next()
+res41: Int = 40520
+
+```
+
+RDD.toLocalIterator method is a more efficient way to do collect the RDD data at a driver.
+It uses runJob to evaluate only a single partition on each step.
+
+##### Additonal Notes:
+
+RDD source code:
+
+```
+def toLocalIterator: Iterator[T] = withScope {
+    def collectPartition(p: Int): Array[T] = {
+      sc.runJob(this, (iter: Iterator[T]) => iter.toArray, Seq(p)).head
+    }
+    (0 until partitions.length).iterator.flatMap(i => collectPartition(i))
+ }
+```
+
+Spark Context source code:
+
+```
+def runJob[T, U](rdd: RDD[T], func: (TaskContext, Iterator[T]) ⇒ U, partitions: Seq[Int])
+(implicit arg0: ClassTag[U]): Array[U]
+```
+Run a function on a given set of partitions in an RDD and return the results as an array.
+

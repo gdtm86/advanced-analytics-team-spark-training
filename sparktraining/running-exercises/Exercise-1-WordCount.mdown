@@ -1,0 +1,476 @@
+WordCount: Building a Word Count application
+============================================
+
+
+* Part 1: Create a base RDD and pair RDDs
+* Part 2: Counting with pair RDDs
+* Part 3: Finding Unique words and a mean value
+* Part 4: Apply word count to a file
+
+### Part 1: Creating a based RDD and pair RDDs
+
+List of animals used for this exercise 
+
+```
+"cat", "elephant", "rat", "rat", "cat"
+```
+
+(1a) Create a base RDD
+
+We will start by generating a base RDD by using a Scala list and the sc.parallelize method. Then we willl print out the type of the base RDD.
+
+```
+val wordsList = List("cat", "elephant", "rat", "rat", "cat")
+val wordsRDD = sc.parallelize(wordsList, 4)
+//Print out the type of wordsRDD
+wordsRDD
+```
+
+(1b) Pluralize and test
+
+
+```
+scala> def makePlural(word:String) =  word+"s"
+makePlural: (word: String)String
+
+scala> makePlural("cat")
+res2: String = cats
+
+scala> makePlural("bird")
+res3: String = birds
+```
+
+(1c) Apply makePlural to the base RDD
+
+```
+scala> val pluralRDD = wordsRDD.map(word => makePlural(word))
+pluralRDD: org.apache.spark.rdd.RDD[String] = MapPartitionsRDD[1] at map at <console>:27
+
+scala> pluralRDD.collect()
+res4: Array[String] = Array(cats, elephants, rats, rats, cats)
+
+```
+
+(1d) Pass a lambda/anonymous function to map
+
+```
+scala> val pluralAnonymousRDD = wordsRDD.map(word => word+"s")
+pluralAnonymousRDD: org.apache.spark.rdd.RDD[String] = MapPartitionsRDD[2] at map at <console>:25
+
+scala> pluralAnonymousRDD.collect()
+res5: Array[String] = Array(cats, elephants, rats, rats, cats)
+
+```
+
+(1e) Length of each word
+
+```
+scala> val pluralLengths = pluralRDD.map(word => word.length).collect()
+pluralLengths: Array[Int] = Array(4, 9, 4, 4, 4)
+```
+
+(1f) Pair RDDs
+
+Create a pairRDD.
+
+```
+scala> val wordPairsRDD = wordsRDD.map(word => (word,1))
+wordPairsRDD: org.apache.spark.rdd.RDD[(String, Int)] = MapPartitionsRDD[4] at map at <console>:25
+
+scala> wordPairsRDD.collect()
+res7: Array[(String, Int)] = Array((cat,1), (elephant,1), (rat,1), (rat,1), (cat,1))
+```
+
+### Part 2: Counting with pair RDDs
+
+Now, let's count the number of times a particular word appears in the RDD. 
+
+We will use two approaches for this.
+
+(2a) groupByKey() approach
+
+
+```
+scala> val wordsGrouped = wordPairsRDD.groupByKey()
+wordsGrouped: org.apache.spark.rdd.RDD[(String, Iterable[Int])] = ShuffledRDD[5] at groupByKey at <console>:27
+
+scala> val wordsGroupedLocal = wordsGrouped.collect()
+wordsGroupedLocal: Array[(String, Iterable[Int])] = Array((rat,CompactBuffer(1, 1)), (elephant,CompactBuffer(1)), (cat,CompactBuffer(1, 1)))
+
+
+scala>   def calculateCount( item:(String,Iterable[Int]) ) = {
+     |     val wordCount = item._2.toList.sum
+     |     (item._1,wordCount)
+     |   }
+calculateCount: (item: (String, Iterable[Int]))(String, Int)
+
+scala>   for (i <- 0 to wordsGroupedLocal.length-1){
+     |     println(calculateCount(wordsGroupedLocal(i)))
+     |   }
+(rat,2)
+(elephant,1)
+(cat,2)
+```
+
+(2b) Use groupByKey() to obtain the counts
+
+```
+scala> wordsGrouped.map((record) => (record._1,record._2.toList.sum)).collect()
+res37: Array[(String, Int)] = Array((rat,2), (elephant,1), (cat,2))
+```
+
+(2c) Counting using reduceByKey()
+
+```
+scala> val wordCounts = wordPairsRDD.reduceByKey((v1,v2) => v1+v2)
+wordCounts: org.apache.spark.rdd.RDD[(String, Int)] = ShuffledRDD[7] at reduceByKey at <console>:27
+
+scala> wordCounts.collect()
+res39: Array[(String, Int)] = Array((rat,2), (elephant,1), (cat,2))
+```
+
+(2d) All together
+
+```
+scala> val wordCountsCollected = (wordsRDD
+     |                        .map(word => (word,1))
+     |                        .reduceByKey((v1,v2)=>v1+v2)
+     |                        .collect())
+wordCountsCollected: Array[(String, Int)] = Array((rat,2), (elephant,1), (cat,2))
+
+```
+
+### Part 3: Finding Unique words and a mean value
+
+(3a) Unique words
+
+```
+scala> val uniqueWords = wordCounts.count()
+uniqueWords: Long = 3
+```
+
+(3b) Mean using reduce
+
+```
+scala>   val totalCount = (wordCounts
+     |                     .map(record => record._2)
+     |                     .reduce((v1,v2) => v1+v2)
+     |                     )
+totalCount: Int = 5
+
+scala>  val average = totalCount / uniqueWords.toFloat
+average: Float = 1.6666666
+
+```
+
+### Part 4: Apply word count to a file
+
+(4a) wordcount function
+
+Let's create a wordcount function
+
+```
+scala> def wordCount(wordListRDD:org.apache.spark.rdd.RDD[String]) = {
+     |     val wordcount = wordListRDD
+     |                     .map(word => (word, 1))
+     |                     .reduceByKey((v1, v2) => v1 + v2)
+     |     wordcount
+     |   }
+wordCount: (wordListRDD: org.apache.spark.rdd.RDD[String])org.apache.spark.rdd.RDD[(String, Int)]
+
+scala> wordCount(wordsRDD).collect()
+res66: Array[(String, Int)] = Array((rat,2), (elephant,1), (cat,2))
+
+```
+
+(4b) Capitalization and punctuation
+
+```
+scala>   import java.util.regex.{Pattern}
+import java.util.regex.Pattern
+
+scala>   def removePunctuation(text:String) = {
+     |   /*
+     |   Removes punctuation, changes to lower case, and strips leading and trailing spaces.
+     |
+     |     Note:
+     |         Only spaces, letters, and numbers should be retained.  Other characters should should be
+     |         eliminated (e.g. it's becomes its).  Leading and trailing spaces should be removed after
+     |         punctuation is removed.
+     |
+     |     Args:
+     |         text (str): A string.
+     |
+     |     Returns:
+     |         str: The cleaned up string.
+     |  */
+     |     text.toLowerCase.replaceAll("""[\'?:._!,\(\)\[\];\"-\--\/\}\{]+""","").trim()
+     |   }
+removePunctuation: (text: String)String
+
+scala> removePunctuation("Hi, you!")
+res76: String = hi you
+
+scala> removePunctuation(" No under_score!")
+res77: String = no underscore
+
+scala> removePunctuation(" The Elephant's 4 cats. ")
+res78: String = the elephants 4 cats
+
+scala>
+```
+
+(4c) Load a text file
+
+
+Load the shakespeare text file and remove punctions from the entire file.
+
+```
+scala> val shakesPeareFilePath = "/user/gmedasani/data/exercises-data/shakespeare.txt"
+shakesPeareFilePath: String = /user/gmedasani/data/exercises-data/shakespeare.txt
+
+scala> val shakespeareRDD = sc.textFile(shakesPeareFilePath, 8).map(record => removePunctuation(record))
+shakespeareRDD: org.apache.spark.rdd.RDD[String] = MapPartitionsRDD[2] at map at <console>:25
+
+scala> shakespeareRDD.take(2)
+res0: Array[String] = Array(1609, "")
+
+scala> shakespeareRDD.take(20)
+res1: Array[String] = Array(1609, "", the sonnets, "", by william shakespeare, "", "", "", 1, from fairest creatures we desire increase, that thereby beautys rose might never die, but as the riper should by time decease, his tender heir might bear his memory, but thou contracted to thine own bright eyes, feedst thy lights flame with selfsubstantial fuel, making a famine where abundance lies, thy self thy foe to thy sweet self too cruel, thou that art now the worlds fresh ornament, and only herald to the gaudy spring, within thine own bud buriest thy content)
+```
+
+Print the first 50 lines with line numbers.
+
+```
+val shakespeareRDDWithLineNumberRDD = shakespeareRDD.zipWithIndex().map(record => record._2.toString+":"+record._1)
+
+scala> val firstFiftyLinesArray = shakespeareRDDWithLineNumberRDD.take(50)
+firstFiftyLinesArray: Array[String] = Array(0:1609, 1:, 2:the sonnets, 3:, 4:by william shakespeare, 5:, 6:, 7:, 8:1, 9:from fairest creatures we desire increase, 10:that thereby beautys rose might never die, 11:but as the riper should by time decease, 12:his tender heir might bear his memory, 13:but thou contracted to thine own bright eyes, 14:feedst thy lights flame with selfsubstantial fuel, 15:making a famine where abundance lies, 16:thy self thy foe to thy sweet self too cruel, 17:thou that art now the worlds fresh ornament, 18:and only herald to the gaudy spring, 19:within thine own bud buriest thy content, 20:and tender churl makst waste in niggarding, 21:pity the world or else this glutton be, 22:to eat the worlds due by the grave and thee, 23:, 24:, 25:2, 26:when forty winters ...
+
+scala> firstFiftyLinesArray.length
+res9: Int = 50
+```
+
+```
+scala> firstFiftyLinesArray.toList.foreach(println)
+0:1609
+1:
+2:the sonnets
+3:
+4:by william shakespeare
+5:
+6:
+7:
+8:1
+9:from fairest creatures we desire increase
+10:that thereby beautys rose might never die
+11:but as the riper should by time decease
+12:his tender heir might bear his memory
+13:but thou contracted to thine own bright eyes
+14:feedst thy lights flame with selfsubstantial fuel
+15:making a famine where abundance lies
+16:thy self thy foe to thy sweet self too cruel
+17:thou that art now the worlds fresh ornament
+18:and only herald to the gaudy spring
+19:within thine own bud buriest thy content
+20:and tender churl makst waste in niggarding
+21:pity the world or else this glutton be
+22:to eat the worlds due by the grave and thee
+23:
+24:
+25:2
+26:when forty winters shall besiege thy brow
+27:and dig deep trenches in thy beautys field
+28:thy youths proud livery so gazed on now
+29:will be a tattered weed of small worth held
+30:then being asked where all thy beauty lies
+31:where all the treasure of thy lusty days
+32:to say within thine own deep sunken eyes
+33:were an alleating shame and thriftless praise
+34:how much more praise deserved thy beautys use
+35:if thou couldst answer this fair child of mine
+36:shall sum my count and make my old excuse
+37:proving his beauty by succession thine
+38:this were to be new made when thou art old
+39:and see thy blood warm when thou feelst it cold
+40:
+41:
+42:3
+43:look in thy glass and tell the face thou viewest
+44:now is the time that face should form another
+45:whose fresh repair if now thou not renewest
+46:thou dost beguile the world unbless some mother
+47:for where is she so fair whose uneared womb
+48:disdains the tillage of thy husbandry
+49:or who is he so fond will be the tomb
+
+scala>
+```
+
+(4d) Words from lines
+
+
+* First issue is that we need to split each line by it's spaces
+* The second issue is we need to filter out empty lines.
+
+```
+scala> val shakespeareWordsRDD = shakespeareRDD.flatMap(line => line.split(' '))
+shakespeareWordsRDD: org.apache.spark.rdd.RDD[String] = MapPartitionsRDD[10] at flatMap at <console>:27
+
+scala> shakespeareWordsRDD.top(5)
+res11: Array[String] = Array(zwaggerd, zounds, zounds, zounds, zounds)
+
+scala> val shakespeareWordCount = shakespeareWordsRDD.count()
+shakespeareWordCount: Long = 927631
+```
+
+(4e) Remove empty elements
+
+```
+scala> val shakeWordsRDD = shakespeareWordsRDD.filter(word => word != "")
+shakeWordsRDD: org.apache.spark.rdd.RDD[String] = MapPartitionsRDD[12] at filter at <console>:29
+
+scala> shakeWordsRDD.count()
+res12: Long = 882996
+```
+
+(4f) Count the words
+
+Obtain the fifteen most common words.
+
+```
+scala> val top15WordsAndCounts = shakeWordsRDD.map(word => (word,1)).reduceByKey((v1,v2) => v1+v2).map(record => (record._2,record._1)).sortByKey(false).map(record => (record._2,record._1)).take(15)
+
+scala> top15WordsAndCounts.toList.foreach(record => println(record._1+": "+record._2))
+the: 27361
+and: 26028
+i: 20681
+to: 19150
+of: 17463
+a: 14593
+you: 13615
+my: 12481
+in: 10956
+that: 10890
+is: 9134
+not: 8497
+with: 7771
+me: 7769
+it: 7678
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

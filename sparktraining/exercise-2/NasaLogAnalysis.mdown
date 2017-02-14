@@ -1,0 +1,138 @@
+NASA Apache Log Analysis
+========================
+
+
+In this exercise we will use the NASA WebServer logs from Aug 1995 and perform some analysis.
+
+Apache Log Details:
+
+Field 1 = host          
+Field 2 = client_id 
+Field 3 = user_id       
+Field 4 = timestamp     
+Field 5 = method        
+Field 6 = endpoint      
+Field 7 = protocol      
+Field 8 = response_code
+Field 9 = content_size  
+
+
+Create a Spark program to perform the following analysis.
+
+*  **Using the following regex pattern, parse all the Apache Logs. Print the Total number of records parsed, number of records parsed successfully and number of records failed to be parsed. Please use the provided helper class ApacheLogParserUtil.scala in your Spark program**
+
+> val APACHE_ACCESS_LOG_PATTERN = """^(\S+) (\S+) (\S+) \[([\w:/]+\s[+\-]\d{4})\] "(\S+) (\S+)\s*(\S*)\s*" (\d{3}) (\S+)"""
+
+
+```
+New - Total number of logs parsed: 1043177
+New - Total number of logs parsed - succeeded: 1043177
+New - Total number of logs parsed - failed: 0
+```
+
+* **Content-Size Statistics. Calculate the Minimum Content Size, Maximum Content Size, Average Content Size.**
+
+```
+Average Content Size: 17528.738
+Minimum Content Size: 0.0
+Maximum Context Size: 3421948.0
+```
+
+* **Count the number of response codes by each response code type and print**
+
+```
+(200,940847)
+(304,79824)
+(302,16244)
+(404,6185)
+(403,58)
+(501,17)
+(500,2)
+```
+
+* **Find the top 10 client-ids by requests count**
+
+```
+(edams.ksc.nasa.gov,4034)
+(piweba5y.prodigy.com,3237)
+(piweba4y.prodigy.com,3043)
+(piweba3y.prodigy.com,2830)
+(www-d1.proxy.aol.com,2715)
+(www-b3.proxy.aol.com,2518)
+(news.ti.com,2507)
+(www-b2.proxy.aol.com,2481)
+(163.206.89.4,2478)
+(www-c2.proxy.aol.com,2438)
+```
+
+* **Find the top 10 endpoints by requests count**
+
+```
+(/images/NASA-logosmall.gif,59737)
+(/images/KSC-logosmall.gif,50452)
+(/images/MOSAIC-logosmall.gif,43890)
+(/images/USA-logosmall.gif,43664)
+(/images/WORLD-logosmall.gif,43277)
+(/images/ksclogo-medium.gif,41336)
+(/ksc.html,28582)
+(/history/apollo/images/apollo-logo1.gif,26778)
+(/images/launch-logo.gif,24755)
+(/,20292)
+```
+
+* **Number of daily unique clients. Print the daily unique clients for first 10 days**
+
+```
+(1,2582)
+(3,3222)
+(4,4190)
+(5,2502)
+(6,2537)
+(7,4106)
+(8,4406)
+(9,4317)
+(10,4523)
+(11,4346)
+```
+
+* **Average Number of Daily Requests per clients**
+
+```
+(1,13)
+(3,12)
+(4,14)
+(5,12)
+(6,12)
+(7,13)
+(8,13)
+(9,14)
+(10,13)
+(11,14)
+(12,13)
+(13,13)
+(14,13)
+(15,13)
+(16,13)
+(17,13)
+(18,13)
+(19,12)
+(20,12)
+(21,13)
+(22,12)
+```
+
+* **Top 5 days by count of 404 response codes.**
+
+```
+(7,532)
+(8,381)
+(6,372)
+(4,346)
+(15,326)
+```
+
+
+
+
+
+

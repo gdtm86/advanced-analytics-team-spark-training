@@ -1,0 +1,1140 @@
+Spark SQL and DataFrames
+========================
+
+Spark SQL is a Spark module for structured data processing. It provides a programming abstraction called DataFRames and can also acta as a distributed SQL engine.
+
+Spark SQL can also be used to read data from an existing Hive Installation. For more on how to configure this feature, please refer to the Hive Tables section.
+
+
+### DataFrames
+
+A DataFrame is a distributed collection of data organized into named columns. It is conceptually equivalent to a table in a relational database or a data frame in R/Python, but with richer optimizations under the hood. 
+
+The DataFrame API is available in Scala, Java, Python, and R
+
+### Starting Point: SQL context
+
+The entry point into all functionality in Spark SQL is the SQLContext class, or one of it's descendants.  
+
+When you start a spark shell, SQLContext is automatically created for you.
+
+````
+Using Scala version 2.10.4 (Java HotSpot(TM) 64-Bit Server VM, Java 1.7.0_67)
+Type in expressions to have them evaluated.
+Type :help for more information.
+16/03/15 10:31:28 WARN MetricsSystem: Using default name DAGScheduler for source because spark.app.id is not set.
+Spark context available as sc (master = yarn-client, app id = application_1457476726429_0013).
+SQL context available as sqlContext.
+scala>
+
+````
+
+
+In a standalone Spark program, you can also create a SQLContext by passing in the spark context as shown below.
+
+```
+val sc: SparkContext // An existing SparkContext.
+val sqlContext = new org.apache.spark.sql.SQLContext(sc)
+
+// this is used to implicitly convert an RDD to a DataFrame.
+import sqlContext.implicits._
+```
+
+In addition to the basic SQLContext, you can also create HiveContext, which provides a superset of the functionality provided by the basic SQLContext. 
+
+Additional features include:
+* Ability to write queries using the more complete HiveQL parser
+* Access to Hive UDFs
+* Ability to read from Hive/Impala tables. 
+
+To use a HiveContext, you do not need to have an existing Hive setup, and all the data sources available to a SQLContext are still available. 
+
+In CDH, HiveContext is created for you by default. As shown in the shell below you can see that the SQLContext used in CDH Sparkshell is actually a HiveContext.
+
+
+This means by default when you load the shell, you should be able to access any SQLContext datasource and Hive Tables.
+
+```
+scala> sqlContext
+res0: org.apache.spark.sql.SQLContext = org.apache.spark.sql.hive.HiveContext@a53ac62
+
+scala> sqlContext.getClass()
+res1: Class[_ <: org.apache.spark.sql.SQLContext] = class org.apache.spark.sql.hive.HiveContext
+
+scala>
+```
+
+The specific variant of SQL that is used to parse queries can also be selected using the spark.sql.dialect option. 
+
+For SQLContext, the only dialext available is "sql" which uses simple SQL parser provided by SparkSQL. In HiveContext, you you could use either 'hiveql' or 'sql' 
+
+Here is an example on look at the dialect and change it.
+
+```
+scala> sqlContext.getConf("spark.sql.dialect")
+res4: String = sql
+
+scala> sqlContext.setConf("spark.sql.dialect","hiveql")
+
+scala> sqlContext.getConf("spark.sql.dialect")
+res6: String = hiveql
+```
+
+For now, I've changed it back to 'sql' for the purpose of this course.
+
+```
+scala> sqlContext.getConf("spark.sql.dialect")
+res10: String = sql
+```
+
+### Creating DataFrames
+
+With a SQLContext, applications can create DataFrames from
+* **Existing RDDs**
+* **Hive Tables**
+* **Built-in Data Sources**
+* **Third-party Data Sources**
+
+
+### Creating DataFrames from an existing RDD.
+
+Spark SQL supports two different methods for converting existing RDDs into DataFrames.
+
+1. First method uses reflection to infer the schema of an RDD that contains specific types of objects. This reflection based approach leads to more concise code and works well when you already know the schema while writing your Spark application.
+
+2. Second method uses creating DataFrames through programmatic interface that allows you to contruct a schema and then apply it to an existing RDD. While this method is more verbose, it allows you to construct DataFrames when the columns and their types are not until runtime.
+
+
+Let's first explore the first option
+
+#### Inferring the Schema Using Reflection
+
+The Scala interface for SparkSQL supports automatically converting an RDD containg case classes to a DataFrame. The case class defines the schema of the table. The names of the arguments to the case class are read using reflection and becomes names of the columns. 
+
+Case classes can also be nested or contain complex types such as Sequence or Arrays. This RDD can be implicity converted to a DataFrame and then be registerd as a table.
+
+```
+scala> val peopleRDD = sc.textFile("/user/gmedasani/data/resources/people.txt").map(line => line.split(","))
+peopleRDD: org.apache.spark.rdd.RDD[Array[String]] = MapPartitionsRDD[2] at map at <console>:21
+
+scala> case class Person(name: String, age: Int)
+defined class Person
+
+scala> val personRDD = peopleRDD.map( record => { Person(record(0),record(1).trim().toInt) } )
+personRDD: org.apache.spark.rdd.RDD[Person] = MapPartitionsRDD[5] at map at <console>:25
+
+scala> val personDF =  personRDD.toDF()
+personDF: org.apache.spark.sql.DataFrame = [name: string, age: int]
+
+scala> personDF.printSchema
+root
+ |-- name: string (nullable = true)
+ |-- age: integer (nullable = false)
+
+```
+
+Note: In the above example, toDF() method on the RDD is possible due to the sqlContext.implicits._
+
+
+#### Programmatically Specifying the Schema
+
+When case classes cannot be defined ahead of time (for example, the structure of records is encoded in a string, or a text dataset will be parsed and fields will be projected differently for different users), a DataFrame can be programatically with three steps.
+
+1. Create an RDD of Rows from the original RDD
+2. Create the schema represented by a StructType matching  the structure of Rows in the RDD created in Step 1.
+3. Apply the schema to the RDD of Rows via createDataFrame method provided by SQLContext.
+
+```
+// Create an RDD
+scala> val peopleRDD = sc.textFile("/user/gmedasani/data/resources/people.txt").map(line => line.split(",")).map(record => (record(0),record(1).trim()))
+peopleRDD: org.apache.spark.rdd.RDD[(String, String)] = MapPartitionsRDD[21] at map at <console>:23
+
+scala> peopleRDD.take(2)
+res18: Array[(String, String)] = Array((Michael,29), (Andy,30))
+
+scala> val schemaString = "name age"
+schemaString: String = name age
+
+scala> // Import Row.
+scala> import org.apache.spark.sql.Row;
+import org.apache.spark.sql.Row
+
+scala> // Import Spark SQL data types
+scala> import org.apache.spark.sql.types.{StructType,StructField,StringType};
+import org.apache.spark.sql.types.{StructType, StructField, StringType}
+
+//Define the schema StuctType
+// Generate the schema based on the string of schema
+scala> val schema = StructType( schemaString.split(" ").map(fieldName => StructField(fieldName, StringType, true)) )
+schema: org.apache.spark.sql.types.StructType = StructType(StructField(name,StringType,true), StructField(age,StringType,true))
+
+scala> schema.treeString
+res21: String =
+"root
+ |-- name: string (nullable = true)
+ |-- age: string (nullable = true)
+"
+
+// Convert records of the RDD (people) to Rows.
+scala> val peopleRowRDD = peopleRDD.map(record => Row(record._1, record._2))
+peopleRowRDD: org.apache.spark.rdd.RDD[org.apache.spark.sql.Row] = MapPartitionsRDD[22] at map at <console>:28
+
+//Apply the schema to the RDD and create a dataframe
+scala> val peopleDataFrame = sqlContext.createDataFrame(peopleRowRDD, schema)
+peopleDataFrame: org.apache.spark.sql.DataFrame = [name: string, age: string]
+
+//Check the schema for the DataFrame
+scala> peopleDataFrame.printSchema
+root
+ |-- name: string (nullable = true)
+ |-- age: string (nullable = true)
+
+ //Check to see if we can run queries on the new DataFrame
+ //Register the DataFrame as a temp table
+ scala> peopleDataFrame.registerTempTable("peopleTempTable")
+
+//Check to see if the temptable is registered.
+scala> sqlContext.tableNames
+res27: Array[String] = Array(peopletemptable, people, customers, sample_07, sample_08)
+
+//Run a sample query
+scala> sqlContext.sql("select * from peopletemptable where age >= 29").collect()
+res31: Array[org.apache.spark.sql.Row] = Array([Michael,29], [Andy,30])
+
+```
+
+### DataFrame Operations
+
+DataFrames provide a domain-specific language for structured data manipulation in Scala, Java and Python.
+
+DataFrames have several domain-specific-language (DSL) functions in the following classes
+
+* [DataFrame](http://spark.apache.org/docs/1.5.0/api/scala/index.html#org.apache.spark.sql.DataFrame)
+* [Column](http://spark.apache.org/docs/1.5.0/api/scala/index.html#org.apache.spark.sql.Column)
+* [functions](http://spark.apache.org/docs/1.5.0/api/scala/index.html#org.apache.spark.sql.functions$)
+
+Here are some DataFrame Actions available
+
+* collect() 
+* collectAsList()
+* count()
+* describe()
+* first()
+* head()
+* show()
+* take()
+
+```
+// Check to see if the customers_orders table exist
+scala> sqlContext.tableNames
+res32: Array[String] = Array(temppeoplenewdataframetable, customers, customers_orders, map_demo, sample_07, sample_08)
+
+//Create a dataframe from the customers_orders hive table
+scala> val customers_orders_DataFrame = sqlContext.table("default.customers_orders")
+customers_orders_DataFrame: org.apache.spark.sql.DataFrame = [id: int, name: string, email_format: string, frequency: string, order_id: string, order_data: string, state: string]
+
+```
+
+
+* collect()
+
+> Returns an array that contains all of Rows in this DataFrame.
+
+
+```
+scala> customers_orders_DataFrame.collect()
+res34: Array[org.apache.spark.sql.Row] = Array([80283,Angela Perez,html,never,AB6075,2015-02-22T00:00:00,CA], [80283,Angela Perez,html,never,WO5164,2015-08-11T00:00:00,CA], [80283,Angela Perez,html,never,AB6075,2015-02-22T00:00:00,CA], [80283,Angela Perez,html,never,WO5164,2015-08-11T00:00:00,CA], [71230,Alicia C. Torrence,text,never,UG2458,2015-07-05T00:00:00,CA], [71230,Alicia C. Torrence,text,never,JX9924,2015-01-03T00:00:00,CA], [71230,Alicia C. Torrence,text,never,UG2458,2015-07-05T00:00:00,CA], [71230,Alicia C. Torrence,text,never,JX9924,2015-01-03T00:00:00,CA],tex...
+scala>
+```
+
+* collectAsList()
+
+> Returns a Java list that contains all of Rows in this DataFrame.
+
+```
+scala> customers_orders_DataFrame.collectAsList()
+res35: java.util.List[org.apache.spark.sql.Row] = [[80283,Angela Perez,html,never,AB6075,2015-02-22T00:00:00,CA], [80283,Angela Perez,html,never,WO5164,2015-08-11T00:00:00,CA], [80283,Angela Perez,html,never,AB6075,2015-02-22T00:00:00,CA], [80283,Angela Perez,html,never,WO5164,2015-08-11T00:00:00,CA], [71230,Alicia C. Torrence,text,never,UG2458,2015-07-05T00:00:00,CA],[50951,Elaine Meikle...
+scala>
+```
+
+* count()
+
+> Returns the number of rows in the DataFrame.
+
+```
+scala> customers_orders_DataFrame.count()
+res36: Long = 212
+```
+
+* describe()
+
+>Computes statistics for numeric columns, including count, mean, stddev, min, and max. If no columns are given, this function computes statistics for all numerical columns.
+
+>This function is meant for exploratory data analysis, as we make no guarantee about the backward compatibility of the schema of the resulting DataFrame. If you want to programmatically compute summary statistics, use the agg function instead.
+
+```
+scala> customers_orders_DataFrame.describe("id").show()
++-------+------------------+
+|summary|                id|
++-------+------------------+
+|  count|               212|
+|   mean|59199.339622641506|
+| stddev|               NaN|
+|    min|             10271|
+|    max|             98751|
++-------+------------------+
+```
+
+* first()
+
+>Returns the first row.
+
+```
+scala> customers_orders_DataFrame.first()
+res40: org.apache.spark.sql.Row = [80283,Angela Perez,html,never,AB6075,2015-02-22T00:00:00,CA]
+```
+
+* head()
+
+> Returns the first row
+
+```
+scala> customers_orders_DataFrame.head(2)
+res42: Array[org.apache.spark.sql.Row] = Array([80283,Angela Perez,html,never,AB6075,2015-02-22T00:00:00,CA], [80283,Angela Perez,html,never,WO5164,2015-08-11T00:00:00,CA])
+
+```
+
+* show()
+
+> Displays the top 20 rows of DataFrame in a tabular form. Strings more than 20 characters will be truncated, and all cells will be aligned right.
+
+```
+scala> customers_orders_DataFrame.show()
++-----+------------------+------------+---------+--------+-------------------+-----+
+|   id|              name|email_format|frequency|order_id|         order_data|state|
++-----+------------------+------------+---------+--------+-------------------+-----+
+|80283|      Angela Perez|        html|    never|  AB6075|2015-02-22T00:00:00|   CA|
+|80283|      Angela Perez|        html|    never|  WO5164|2015-08-11T00:00:00|   CA|
+|80283|      Angela Perez|        html|    never|  AB6075|2015-02-22T00:00:00|   CA|
+|80283|      Angela Perez|        html|    never|  WO5164|2015-08-11T00:00:00|   CA|
+|71230|Alicia C. Torrence|        text|    never|  UG2458|2015-07-05T00:00:00|   CA|
+|71230|Alicia C. Torrence|        text|    never|  JX9924|2015-01-03T00:00:00|   CA|
+|71230|Alicia C. Torrence|        text|    never|  UG2458|2015-07-05T00:00:00|   CA|
+|71230|Alicia C. Torrence|        text|    never|  JX9924|2015-01-03T00:00:00|   CA|
+|50951|     Elaine Meikle|        text|  monthly|  ZH2377|2015-11-06T00:00:00|   CA|
+|50951|     Elaine Meikle|        text|  monthly|  RQ3237|2015-02-01T00:00:00|   CA|
+|50951|     Elaine Meikle|        text|  monthly|  ZH2377|2015-11-06T00:00:00|   CA|
+|50951|     Elaine Meikle|        text|  monthly|  RQ3237|2015-02-01T00:00:00|   CA|
+|69735|        Tracy Wong|        text|  monthly|  AZ1112|2015-06-22T00:00:00|   FL|
+|69735|        Tracy Wong|        text|  monthly|  ZX3909|2014-11-18T00:00:00|   FL|
+|69735|        Tracy Wong|        text|  monthly|  AZ1112|2015-06-22T00:00:00|   FL|
+|69735|        Tracy Wong|        text|  monthly|  ZX3909|2014-11-18T00:00:00|   FL|
+|62346|   Jeanetta Aquino|        text|    never|  DW7833|2015-02-13T00:00:00|   FL|
+|62346|   Jeanetta Aquino|        text|    never|  OT9241|2015-02-16T00:00:00|   FL|
+|62346|   Jeanetta Aquino|        text|    never|  DW7833|2015-02-13T00:00:00|   FL|
+|62346|   Jeanetta Aquino|        text|    never|  OT9241|2015-02-16T00:00:00|   FL|
++-----+------------------+------------+---------+--------+-------------------+-----+
+only showing top 20 rows
+
+```
+
+* take()
+
+>Returns the first n rows in the DataFrame.
+
+```
+scala> customers_orders_DataFrame.take(5)
+res44: Array[org.apache.spark.sql.Row] = Array([80283,Angela Perez,html,never,AB6075,2015-02-22T00:00:00,CA], [80283,Angela Perez,html,never,WO5164,2015-08-11T00:00:00,CA], [80283,Angela Perez,html,never,AB6075,2015-02-22T00:00:00,CA], [80283,Angela Perez,html,never,WO5164,2015-08-11T00:00:00,CA], [71230,Alicia C. Torrence,text,never,UG2458,2015-07-05T00:00:00,CA])
+```
+
+Here are some Basic DataFrame functions
+
+* columns()
+* dtypes()
+* explain()
+* explain(extended:Boolean)
+* isLocal()
+* printSchema()
+* toDF(colNames: String)
+
+Examples:
+
+* columns()
+
+>Returns all column names as an array.
+
+```
+scala> customers_orders_DataFrame.columns
+res46: Array[String] = Array(id, name, email_format, frequency, order_id, order_data, state)
+```
+
+* dtypes()
+
+>Returns all column names and their data types as an array.
+
+```
+scala> customers_orders_DataFrame.dtypes
+res48: Array[(String, String)] = Array((id,IntegerType), (name,StringType), (email_format,StringType), (frequency,StringType), (order_id,StringType), (order_data,StringType), (state,StringType))
+```
+
+* explain()
+
+> Only prints the physical plan to the console for debugging purposes.
+
+```
+scala> customers_orders_DataFrame.explain()
+== Physical Plan ==
+Scan ParquetRelation[hdfs://ns1/user/hive/warehouse/customers_orders/state=CA,hdfs://ns1/user/hive/warehouse/customers_orders/state=FL,hdfs://ns1/user/hive/warehouse/customers_orders/state=IL,hdfs://ns1/user/hive/warehouse/customers_orders/state=IN,hdfs://ns1/user/hive/warehouse/customers_orders/state=MO,hdfs://ns1/user/hive/warehouse/customers_orders/state=NJ,hdfs://ns1/user/hive/warehouse/customers_orders/state=RI,hdfs://ns1/user/hive/warehouse/customers_orders/state=TN,hdfs://ns1/user/hive/warehouse/customers_orders/state=TX,hdfs://ns1/user/hive/warehouse/customers_orders/state=WI][id#70,name#71,email_format#72,frequency#73,order_id#74,order_data#75,state#69]
+```
+
+* isLocal()
+
+>Returns true if the collect and take methods can be run locally (without any Spark executors).
+
+```
+scala> customers_orders_DataFrame.isLocal
+res54: Boolean = false
+```
+
+* printSchema()
+
+> Prints the schema to the console in a nice tree format.
+
+```
+scala> customers_orders_DataFrame.printSchema
+root
+ |-- id: integer (nullable = true)
+ |-- name: string (nullable = true)
+ |-- email_format: string (nullable = true)
+ |-- frequency: string (nullable = true)
+ |-- order_id: string (nullable = true)
+ |-- order_data: string (nullable = true)
+ |-- state: string (nullable = true)
+
+```
+
+* toDF(colNames: String*)
+
+> Returns a new DataFrame with columns renamed.
+
+```
+scala> val customers_orders_DataFrame_1 = customers_orders_DataFrame.toDF("id1", "name1", "email_format1", "frequency1", "order_id1", "order_data1", "state1")
+customers_orders_DataFrame_1: org.apache.spark.sql.DataFrame = [id1: int, name1: string, email_format1: string, frequency1: string, order_id1: string, order_data1: string, state1: string]
+
+scala> customers_orders_DataFrame_1.printSchema
+root
+ |-- id1: integer (nullable = true)
+ |-- name1: string (nullable = true)
+ |-- email_format1: string (nullable = true)
+ |-- frequency1: string (nullable = true)
+ |-- order_id1: string (nullable = true)
+ |-- order_data1: string (nullable = true)
+ |-- state1: string (nullable = true)
+
+```
+
+Here are some Language Integrated Queries
+
+* agg()
+* apply()
+* as()
+* col()
+* cube()
+* distinct()
+* drop()
+* dropDuplicates()
+* except()
+* explode()
+* filter()
+* groupBy()
+* intersect()
+* join()
+* limit()
+* na()
+* orderBy()
+* randomSplit()
+* rollup()
+* select()
+* sort()
+* stat()
+* unionAll()
+* where
+* withColumn()
+* WithColumnRenamed()
+
+
+All DataFrames support following familiar RDD Operations
+
+* coalesce()
+* faltMap()
+* foreach()
+* foreachPartition()
+* javaRDD
+* map()
+* mapPartitions()
+* rdd
+* repartition()
+* toJSON()
+* toJavaRDD()
+
+
+### Creating DataFrames from HiveTables
+
+
+In CDH 5.5.2 sqlContext by default loads HiveContext and you can access all the Hive Tables.
+
+For example, we have the following tables in Hive's default database
+
+```
+hive> show databases;
+OK
+default
+Time taken: 0.6 seconds, Fetched: 1 row(s)
+hive> use default;
+OK
+Time taken: 0.029 seconds
+hive> show tables;
+OK
+customers
+sample_07
+sample_08
+Time taken: 0.028 seconds, Fetched: 3 row(s)
+```
+
+As shown below, we can see that the tables customers, sample_07 and sample_08 are available through sqlContext.
+
+```
+scala> sqlContext.tableNames
+res32: Array[String] = Array(peopletemptable, people, customers, sample_07, sample_08)
+scala>
+```
+
+
+Let's query Impala and we see 6 rows that have addresses in Illinois State with key as billing
+
+```
+[intel-2.vpc.cloudera.com:21000] > select addresses.value.street_1 from customers.addresses where key like 'billing' and state like 'IL' ;
+Query: select addresses.value.street_1 from customers.addresses where key like 'billing' and state like 'IL'
++---------------------------+
+| value.street_1            |
++---------------------------+
+| 1396 Alexander Drive      |
+| 432 Lightning Point Drive |
+| 1803 Powder House Road    |
+| 2253 Watson Lane          |
+| 471 Reppert Coal Road     |
+| 3493 Rose Street          |
++---------------------------+
+Fetched 6 row(s) in 0.12s
+[intel-2.vpc.cloudera.com:21000] >
+
+```
+
+As we can see below, both the results from Impala and SparkSQL match.
+
+```
+scala> sqlContext.setConf("spark.sql.dialect","hiveql")
+
+scala> sqlContext.getConf("spark.sql.dialect")
+res35: String = hiveql
+
+scala> sqlContext.sql("select addresses.billing.street_1 from customers where addresses.billing.state like 'IL'").collect()
+
+res1: Array[org.apache.spark.sql.Row] = Array([1396 Alexander Drive], [432 Lightning Point Drive], [1803 Powder House Road], [2253 Watson Lane], [471 Reppert Coal Road], [3493 Rose Street])
+
+```
+
+Creating DataFrames from HiveTables
+
+```
+scala> val sample_08_DataFrame = sqlContext.table("default.sample_08")
+sample_08_DataFrame: org.apache.spark.sql.DataFrame = [code: string, description: string, total_emp: int, salary: int]
+
+scala> sample_08_DataFrame.printSchema
+root
+ |-- code: string (nullable = true)
+ |-- description: string (nullable = true)
+ |-- total_emp: integer (nullable = true)
+ |-- salary: integer (nullable = true)
+
+```
+
+Creating new tables in Hive and Impala. One other cool feature we see is that as we create new tables in Hive and Impala, those tables appear in sqlContext immediately.
+
+For example, let's create a database and table as shown below in Impala.
+
+```
+[intel-2.vpc.cloudera.com:21000] > create database intel
+                                 > ;
+Query: create database intel
+
+Fetched 0 row(s) in 0.09s
+[intel-2.vpc.cloudera.com:21000] > use intel;
+Query: use intel
+
+[intel-2.vpc.cloudera.com:21000] > show tables;
+Query: show tables
++------------+
+| name       |
++------------+
+| intel_test |
++------------+
+Fetched 1 row(s) in 0.00s
+[intel-2.vpc.cloudera.com:21000] > describe intel_test;
+Query: describe intel_test
++--------------+--------+---------+
+| name         | type   | comment |
++--------------+--------+---------+
+| company_name | string |         |
+| company_id   | bigint |         |
++--------------+--------+---------+
+Fetched 2 row(s) in 0.01s
+[intel-2.vpc.cloudera.com:21000] >
+```
+
+Now if we check Spark, we can see the intel_test table.
+
+```
+scala> sqlContext.tableNames("intel")
+res5: Array[String] = Array(intel_test)
+```
+
+### Creating DataFrames from Built-In Data Sources
+
+SparkSQL supports operating on a variety of data sources through the **DataFrame** interface . 
+
+A DataFrame can be operated on as normal RDDs and can also be registered as a temporary table. 
+
+SparkSQL supports a number of structured data sources, letting you get Row objects from them without any complicated loading process.
+
+Here are some of the data sources supported
+
+* **Parquet Files** 
+* **JSON**
+* **JDBC**
+
+*Note: SchemaRDD has been renamed to DataFrame since SparkSQL 1.3. This is primarily because DataFrames no longer inherit from RDD directly, but instead provide most of the functionality that RDDs provide through their own implementation. DataFrames can still be converted to RDDs by calling the .rdd method.*
+
+#### Default DataSource (Parquet)
+
+Default data source can be configured through the SparkSQL configuration 'spark.sql.sources.default'.
+
+By default this is set to Parquet as shown below.
+```
+scala> sqlContext.getConf("spark.sql.sources.default")
+res7: String = org.apache.spark.sql.parquet
+```
+
+
+##### Reading
+
+With this you can use generic load and save functions in sqlContext to read the default data source data.
+
+For example, since the default data source here is Parquet, when we run the sqlContext.load() to load the parquet files.
+
+
+```
+scala> val df = sqlContext.read.load("/user/gmedasani/data/resources/users.parquet")
+df: org.apache.spark.sql.DataFrame = [name: string, favorite_color: string, favorite_numbers: array<int>]
+
+scala> df.select("name", "favorite_color").collect()
+res4: Array[org.apache.spark.sql.Row] = Array([Alyssa,null], [Ben,red])
+
+```
+
+You can learn more about the read() function in the [SQLContext API Documentation](http://spark.apache.org/docs/1.5.0/api/scala/index.html#org.apache.spark.sql.SQLContext)
+
+> def read: DataFrameReader
+>> Returns a DataFrameReader that can be used to read data in as a DataFrame.
+
+
+We can see here that sqlContext.read gives a DataFrameReader
+```
+scala> sqlContext.read
+res5: org.apache.spark.sql.DataFrameReader = org.apache.spark.sql.DataFrameReader@dcd7334
+```
+
+You can learn more about the DataFrameReader API at [DataFrameReader API Documentation](http://spark.apache.org/docs/1.5.0/api/scala/index.html#org.apache.spark.sql.DataFrameReader)
+
+DataFrameReader has a load() method that loads the data in as a data frame.
+
+> def load(path: String): DataFrame
+>>Loads input in as a DataFrame, for data sources that require a path (e.g. data backed by a local or distributed file system).Since 1.4.0
+
+##### Saving
+
+Using the default data source format, we can also save the output from the DataFrame operations in Parquet format.
+
+```
+scala> df.select("name", "favorite_color").write.save("/user/gmedasani/data/examples-output/namesAndFavColors.parquet")
+
+
+//Here we can see that nameAndFavColors.parquet file has been created in HDFS
+[gmedasani@intel-1 ~]$ hdfs dfs -ls data/examples-output
+Found 1 items
+drwxr-xr-x   - gmedasani gmedasani          0 2016-03-16 08:32 data/examples-output/namesAndFavColors.parquet
+[gmedasani@intel-1 ~]$
+
+```
+
+##### Save Modes
+
+Save operations can optionally take a SaveMode, that specifies how to handle existing data if present. If it important to realize that these save modes do not utilize any locking and are not atomic. Additionaly, when performing a Overwrite, the data will be deleted before writing out the new data.
+
+
+You can use the following options in any language.
+
+>def mode(saveMode: String): DataFrameWriter
+>> Specifies the behavior when data or table already exists.
+
+Options include:
+
+* overwrite: overwrite the existing data.
+* append: append the data.
+* ignore: ignore the operation (i.e. no-op).
+* error: default option, throw an exception at runtime.
+
+Since 1.4.0
+
+
+You can also provide the SaveMode options as following in Scala and Java.
+
+> def mode(saveMode: SaveMode): DataFrameWriter
+>> Specifies the behavior when data or table already exists.
+
+Options include:
+
+* SaveMode.Overwrite: overwrite the existing data.
+* SaveMode.Append: append the data.
+* SaveMode.Ignore: ignore the operation (i.e. no-op).
+* SaveMode.ErrorIfExists: default option, throw an exception at runtime.
+
+Since 1.4.0
+
+#### Parquet Files
+
+Parquet is a columnnar format that is supported by many other data processing systems like Hadoop,Hive and Impala. SparkSQL provides support for both reading and writing Parquet files that automatically preserve the schema of the original data.
+
+*Note: Talk about the performance gains of using the DataFrames in Scala/Java/Python/R API. (Catalyst Optimizer)*
+
+##### Loading and Saving Data Programatically
+
+Here we will explore an example of loading an RDD of text data and storing it as Parquet.
+
+Load the text data and convert it into a DataFrame programatically
+
+Create an RDD
+
+```
+scala> val peopleRDD = sc.textFile("/user/gmedasani/data/resources/people.txt").map(record => record.split(",")).map(record => (record(0),record(1).trim()))
+peopleRDD: org.apache.spark.rdd.RDD[(String, String)] = MapPartitionsRDD[26] at map at <console>:21
+
+scala> peopleRDD.take(2)
+res12: Array[(String, String)] = Array((Michael,29), (Andy,30))
+```
+
+Create a schema string
+```
+scala> val schemaString = "name age"
+schemaString: String = name age
+```
+
+Import the Row and Spark SQL datatypes
+
+```
+scala> import org.apache.spark.sql.Row;
+import org.apache.spark.sql.Row
+
+scala> import org.apache.spark.sql.types.{StructType,StructField,StringType};
+import org.apache.spark.sql.types.{StructType, StructField, StringType}
+```
+
+Generate the schema based on the string of schema and Convert records of the RDD (people) to Rows. Ap
+
+```
+scala> val schema = StructType(schemaString.split(" ").map(fieldName => StructField(fieldName, StringType, true)))
+schema: org.apache.spark.sql.types.StructType = StructType(StructField(name,StringType,true), StructField(age,StringType,true))
+
+
+scala> val peopleRowRDD = peopleRDD.map(record => Row(record._1,record._2))
+peopleRowRDD: org.apache.spark.rdd.RDD[org.apache.spark.sql.Row] = MapPartitionsRDD[4] at map at <console>:25
+
+scala> peopleRowRDD.take(2)
+res1: Array[org.apache.spark.sql.Row] = Array([Michael,29], [Andy,30])
+
+```
+
+Apply the schema to the RDD and create a dataFrame.
+
+```
+scala> val peopleDataFrame = sqlContext.createDataFrame(peopleRowRDD, schema)
+peopleDataFrame: org.apache.spark.sql.DataFrame = [name: string, age: string]
+```
+
+We can now operate on the dataframes as usual and save the DataFrame in Parquet format.
+
+```
+
+//This command saves the data in parquet format as parquet is the default data source format as discussed in the previous section.
+
+scala> peopleDataFrame.write.save("/user/gmedasani/data/examples-output/people-output-parquet")
+
+// We can see the parquet files in HDFS
+
+[gmedasani@intel-1 ~]$ hdfs dfs -ls data/examples-output
+Found 2 items
+drwxr-xr-x   - gmedasani gmedasani          0 2016-03-16 08:32 data/examples-output/namesAndFavColors.parquet
+drwxr-xr-x   - gmedasani gmedasani          0 2016-03-16 09:57 data/examples-output/people-output-parquet
+[gmedasani@intel-1 ~]$ hdfs dfs -ls data/examples-output/people-output-parquet
+Found 5 items
+-rw-r--r--   3 gmedasani gmedasani          0 2016-03-16 09:57 data/examples-output/people-output-parquet/_SUCCESS
+-rw-r--r--   3 gmedasani gmedasani        313 2016-03-16 09:57 data/examples-output/people-output-parquet/_common_metadata
+-rw-r--r--   3 gmedasani gmedasani        760 2016-03-16 09:57 data/examples-output/people-output-parquet/_metadata
+-rw-r--r--   3 gmedasani gmedasani        553 2016-03-16 09:57 data/examples-output/people-output-parquet/part-r-00000-e5c1bcdf-256e-4d46-abb1-9cedb21af83c.gz.parquet
+-rw-r--r--   3 gmedasani gmedasani        543 2016-03-16 09:57 data/examples-output/people-output-parquet/part-r-00001-e5c1bcdf-256e-4d46-abb1-9cedb21af83c.gz.parquet
+[gmedasani@intel-1 ~]$
+```
+
+We can also explicity specify the format of the data source we want to write.
+
+
+```
+scala> peopleDataFrame.write.parquet("/user/gmedasani/data/examples-output/people-output-parquet-1")
+
+scala>
+
+//HDFS Files
+[gmedasani@intel-1 ~]$ hdfs dfs -ls data/examples-output
+Found 3 items
+drwxr-xr-x   - gmedasani gmedasani          0 2016-03-16 08:32 data/examples-output/namesAndFavColors.parquet
+drwxr-xr-x   - gmedasani gmedasani          0 2016-03-16 09:57 data/examples-output/people-output-parquet
+drwxr-xr-x   - gmedasani gmedasani          0 2016-03-16 10:00 data/examples-output/people-output-parquet-1
+
+[gmedasani@intel-1 ~]$ hdfs dfs -ls data/examples-output/people-output-parquet-1
+Found 5 items
+-rw-r--r--   3 gmedasani gmedasani          0 2016-03-16 10:00 data/examples-output/people-output-parquet-1/_SUCCESS
+-rw-r--r--   3 gmedasani gmedasani        313 2016-03-16 10:00 data/examples-output/people-output-parquet-1/_common_metadata
+-rw-r--r--   3 gmedasani gmedasani        760 2016-03-16 10:00 data/examples-output/people-output-parquet-1/_metadata
+-rw-r--r--   3 gmedasani gmedasani        553 2016-03-16 10:00 data/examples-output/people-output-parquet-1/part-r-00000-6ca97640-b3b7-4c6c-bb4b-e5e5c071ea70.gz.parquet
+-rw-r--r--   3 gmedasani gmedasani        543 2016-03-16 10:00 data/examples-output/people-output-parquet-1/part-r-00001-6ca97640-b3b7-4c6c-bb4b-e5e5c071ea70.gz.parquet
+[gmedasani@intel-1 ~]$
+
+```
+
+write() function on the DataFrame gives a DataFrameWriter
+
+```
+scala> peopleDataFrame.write
+res8: org.apache.spark.sql.DataFrameWriter = org.apache.spark.sql.DataFrameWriter@30161d6d
+
+scala> peopleDataFrame.write.getClass()
+res11: Class[_ <: org.apache.spark.sql.DataFrameWriter] = class org.apache.spark.sql.DataFrameWriter
+
+```
+
+You can learn more about the DataFrameWriter API at [DataFrameWriter API Documentation](http://spark.apache.org/docs/1.5.0/api/scala/index.html#org.apache.spark.sql.DataFrameWriter)
+
+DataFrameWriter has a parquet() method that writes the data out in a Parquet format.
+
+> def parquet(path: String): Unit
+>> Saves the content of the DataFrame in Parquet format at the specified path. This is equivalent to:format("parquet").save(path) Since 1.4.0
+
+
+##### Partitioned Discovery
+
+Table partitioning is a common optimization approach used in systems like Hive and Impala. In a partitioned table, data are usually stored in different directories, with partitioning column values encoded in the path of each partition directory.
+
+The Parquet data source is now able to discover and infer partitioning information automatically.
+
+For example we have a Hive/Impala table called customers_orders that is partitioned by the state.
+
+```
+[intel-2.vpc.cloudera.com:21000] > show create table customers_orders
+                                 > ;
+Query: show create table customers_orders
++----------------------------------------------------------------------------------------------------------------+
+| result                                                                                                         |
++----------------------------------------------------------------------------------------------------------------+
+| CREATE TABLE default.customers_orders (                                                                        |
+|   id INT,                                                                                                      |
+|   name STRING,                                                                                                 |
+|   email_format STRING,                                                                                         |
+|   frequency STRING,                                                                                            |
+|   order_id STRING,                                                                                             |
+|   order_data STRING                                                                                            |
+| )                                                                                                              |
+| PARTITIONED BY (                                                                                               |
+|   state STRING                                                                                                 |
+| )                                                                                                              |
+| STORED AS PARQUET                                                                                              |
+| LOCATION 'hdfs://ns1/user/hive/warehouse/customers_orders'                                                     |
+| TBLPROPERTIES ('STATS_GENERATED_VIA_STATS_TASK'='true', 'transient_lastDdlTime'='1458145029', 'numRows'='212') |
++----------------------------------------------------------------------------------------------------------------+
+```
+
+```
+[intel-2.vpc.cloudera.com:21000] > show partitions customers_orders;
+Query: show partitions customers_orders
++-------+-------+--------+---------+--------------+-------------------+---------+-------------------+----------------------------------------------------------+
+| state | #Rows | #Files | Size    | Bytes Cached | Cache Replication | Format  | Incremental stats | Location                                                 |
++-------+-------+--------+---------+--------------+-------------------+---------+-------------------+----------------------------------------------------------+
+| CA    | 12    | 1      | 1.14KB  | NOT CACHED   | NOT CACHED        | PARQUET | false             | hdfs://ns1/user/hive/warehouse/customers_orders/state=CA |
+| FL    | 20    | 1      | 1.30KB  | NOT CACHED   | NOT CACHED        | PARQUET | false             | hdfs://ns1/user/hive/warehouse/customers_orders/state=FL |
+| IL    | 24    | 1      | 1.35KB  | NOT CACHED   | NOT CACHED        | PARQUET | false             | hdfs://ns1/user/hive/warehouse/customers_orders/state=IL |
+| IN    | 14    | 1      | 1.22KB  | NOT CACHED   | NOT CACHED        | PARQUET | false             | hdfs://ns1/user/hive/warehouse/customers_orders/state=IN |
+| MO    | 24    | 1      | 1.38KB  | NOT CACHED   | NOT CACHED        | PARQUET | false             | hdfs://ns1/user/hive/warehouse/customers_orders/state=MO |
+| NJ    | 4     | 1      | 1010B   | NOT CACHED   | NOT CACHED        | PARQUET | false             | hdfs://ns1/user/hive/warehouse/customers_orders/state=NJ |
+| RI    | 32    | 1      | 1.49KB  | NOT CACHED   | NOT CACHED        | PARQUET | false             | hdfs://ns1/user/hive/warehouse/customers_orders/state=RI |
+| TN    | 28    | 1      | 1.43KB  | NOT CACHED   | NOT CACHED        | PARQUET | false             | hdfs://ns1/user/hive/warehouse/customers_orders/state=TN |
+| TX    | 30    | 1      | 1.48KB  | NOT CACHED   | NOT CACHED        | PARQUET | false             | hdfs://ns1/user/hive/warehouse/customers_orders/state=TX |
+| WI    | 24    | 1      | 1.36KB  | NOT CACHED   | NOT CACHED        | PARQUET | false             | hdfs://ns1/user/hive/warehouse/customers_orders/state=WI |
+| Total | 212   | 10     | 13.13KB | 0B           |                   |         |                   |                                                          |
++-------+-------+--------+---------+--------------+-------------------+---------+-------------------+----------------------------------------------------------+
+Fetched 11 row(s) in 0.02s
+[intel-2.vpc.cloudera.com:21000] >
+
+```
+
+By passing /path/to/table to either SQLContext or SQLContext.read.load, SparkSQL will automatically extract the partitioning information from the paths. 
+
+>def table(tableName: String): DataFrame
+>>Returns the specified table as a DataFrame.
+Since 1.3.0
+
+
+```
+scala> val customers_orders_DataFrame = sqlContext.table("default.customers_orders")
+customers_orders_DataFrame: org.apache.spark.sql.DataFrame = [id: int, name: string, email_format: string, frequency: string, order_id: string, order_data: string, state: string]
+
+scala> customers_orders_DataFrame.printSchema
+root
+ |-- id: integer (nullable = true)
+ |-- name: string (nullable = true)
+ |-- email_format: string (nullable = true)
+ |-- frequency: string (nullable = true)
+ |-- order_id: string (nullable = true)
+ |-- order_data: string (nullable = true)
+ |-- state: string (nullable = true)
+
+```
+
+Notice that the data types of the partitioning columns are automatically inferred. In the example above, this is string type for the state column. Currently, numeric data types and string types are supported.
+
+Sometimes users may not want to automatically infere the data types of the partitioning columns. For these use cases, the automatic type inference can be configured by spark.sql.sources.partitionColumnTypeInference.enabled, which is default to true.
+
+```
+scala> sqlContext.getConf("spark.sql.sources.partitionColumnTypeInference.enabled")
+res19: String = true
+``` 
+
+When type inference is disabled, string type will be used for the partitioning columns.
+
+
+##### Schema Merging
+
+Like ProtocolBuffer, Avro and Thrift, Parquet also supports schema evolution. Users can start with a simple schema, and gradually add more columns to the schema as needed. In this way, users may end up with multiple Parquet files with different but manually compatible schemas. 
+
+The parquet data source is now table to automatically detect the case and merge schemas of all these files.
+
+Since schema merging is a relatively expensive operation, and is not a necessity in most cases, we turned it off by dafault starting from 1.5.0.
+
+```
+scala> sqlContext.getConf("spark.sql.parquet.mergeSchema")
+res21: String = false
+```
+
+Set this to true to enable Schema merging.
+
+```
+scala> sqlContext.setConf("spark.sql.parquet.mergeSchema","true")
+
+scala> sqlContext.getConf("spark.sql.parquet.mergeSchema")
+res23: String = true
+```
+
+Example demonstrating merging Schemas
+
+```
+// Create a simple DataFrame, stored into a partition directory
+scala> val df1 = sc.makeRDD(1 to 5).map(i => (i, i * 2)).toDF("single", "double")
+df1: org.apache.spark.sql.DataFrame = [single: int, double: int]
+scala> df1.write.parquet("/user/gmedasani/data/examples-output/test_table/key=1")
+
+// Create another DataFrame in a new partition directory,
+// adding a new column and dropping an existing column
+scala> val df2 = sc.makeRDD(6 to 10).map(i => (i, i * 3)).toDF("single", "triple")
+df2: org.apache.spark.sql.DataFrame = [single: int, triple: int]
+scala> df2.write.parquet("/user/gmedasani/data/examples-output/test_table/key=2")
+```
+
+Now read the partitioned table test_table that has two partitions Key=1 and Key=2 each with Parquet tables containing different schemas.
+
+```
+// Read the partitioned table
+scala> val df3 = sqlContext.read.parquet("/user/gmedasani/data/examples-output/test_table")
+df3: org.apache.spark.sql.DataFrame = [single: int, triple: int, double: int, key: int]
+
+scala> df3.printSchema()
+root
+ |-- single: integer (nullable = true)
+ |-- triple: integer (nullable = true)
+ |-- double: integer (nullable = true)
+ |-- key: integer (nullable = true)
+```
+
+You can also set the data source option mergeSchema to true when reading Parquet Files.
+
+
+#### JSON Datasets
+
+SparSQL can automatically infer the schema of a JSON dataset and load it as a DataFrame. This conversion can be done using SQLContext.read.json() on either RDD of String, or a JSON file.
+
+Note that the file that is offered as a json file is not a typical JSON file. Each line must contain a separate, self-contained valid JSON object. 
+
+As a consequence, a regular multi-line JSON file will most often fail.
+
+##### Reading JSON 
+
+###### DataFrames from JSON Files in HDFS
+
+For example, we have a people.json file on HDFS as shown below.
+
+Each line in people.json file is a self-contained json object.
+
+```
+[gmedasani@intel-1 resources]$ hdfs dfs -ls data/resources
+Found 7 items
+-rw-r--r--   3 gmedasani gmedasani        240 2016-03-15 11:18 data/resources/full_user.avsc
+-rw-r--r--   3 gmedasani gmedasani       5812 2016-03-15 11:18 data/resources/kv1.txt
+-rw-r--r--   3 gmedasani gmedasani         73 2016-03-15 11:18 data/resources/people.json
+-rw-r--r--   3 gmedasani gmedasani         32 2016-03-15 11:18 data/resources/people.txt
+-rw-r--r--   3 gmedasani gmedasani        185 2016-03-15 11:18 data/resources/user.avsc
+-rw-r--r--   3 gmedasani gmedasani        334 2016-03-15 11:18 data/resources/users.avro
+-rw-r--r--   3 gmedasani gmedasani        615 2016-03-15 11:18 data/resources/users.parquet
+
+[gmedasani@intel-1 resources]$ hdfs dfs -cat data/resources/people.json
+{"name":"Michael"}
+{"name":"Andy", "age":30}
+{"name":"Justin", "age":19}
+[gmedasani@intel-1 resources]$
+```
+
+Let's read the file into Spark as a dataframe
+
+```
+// A JSON dataset is pointed to by path.
+// The path can be either a single text file or a directory storing text files.
+
+scala> val peopleDataFrame = sqlContext.read.json("/user/gmedasani/data/resources/people.json")
+peopleDataFrame: org.apache.spark.sql.DataFrame = [age: bigint, name: string]
+
+// The inferred schema can be visualized using the printSchema() method.
+
+scala> peopleDataFrame.printSchema
+root
+ |-- age: long (nullable = true)
+ |-- name: string (nullable = true)
+
+```
+
+Notes from DataFrameReader API Documentation
+
+>def json(path: String): DataFrame
+>>Loads a JSON file (one object per line) and returns the result as a DataFrame.
+
+>>This function goes through the input once to determine the input schema. If you know the schema in advance, use the version that specifies the schema to avoid the extra scan.
+path input path
+
+>>Since 1.4.0
+
+
+###### DataFrames from RDDs containing JSON objects
+
+Alternatively, a DataFrame can be created for a JSON dataset represented by an RDD[String] storing one JSON object per string.
+
+```
+// Create a RDD containing JSON string.
+scala> val peopleJSONList = List("""{"name":"Yin","address":{"city":"Columbus","state":"Ohio"}}""",
+     | """{"name":"Edward","address":{"city":"Chicago","state":"Illinois"}}""",
+     | """{"name":"Clouderan","address":{"city":"San Francisco","state":"California"}}""")
+peopleJSONList: List[String] = List({"name":"Yin","address":{"city":"Columbus","state":"Ohio"}}, {"name":"Edward","address":{"city":"Chicago","state":"Illinois"}}, {"name":"Clouderan","address":{"city":"San Francisco","state":"California"}})
+
+
+scala> val peopleJsonRDD = sc.parallelize(peopleJSONList)
+peopleJsonRDD: org.apache.spark.rdd.RDD[String] = ParallelCollectionRDD[4] at parallelize at <console>:23
+
+scala> peopleJsonRDD.take(1)
+res2: Array[String] = Array({"name":"Yin","address":{"city":"Columbus","state":"Ohio"}})
+
+```
+
+Create a DataFrame from the RDD containing JSON strings.
+
+```
+scala> val peopleNewDataFrame = sqlContext.read.json(peopleJsonRDD)
+peopleNewDataFrame: org.apache.spark.sql.DataFrame = [address: struct<city:string,state:string>, name: string]
+```
+
+Notes from DataFrameReader API Documentation
+
+>def json(jsonRDD: RDD[String]): DataFrame
+>>Loads an RDD[String] storing JSON objects (one object per record) and returns the result as a DataFrame.
+
+>>Unless the schema is specified using schema function, this function goes through the input once to determine the input schema.
+>>jsonRDD input RDD with one JSON object per record
+>>Since 1.4.0
+
+
+We can now register this DataFrame and run SQL queries as shown below.
+
+```
+//Register this dataframe as a table
+scala> peopleNewDataFrame.registerTempTable("TemppeopleNewDataFrameTable")
+
+
+//check to see if the table 'temppeoplenewdataframetable' exists.
+scala> sqlContext.tableNames
+res4: Array[String] = Array(temppeoplenewdataframetable, customers, customers_orders, map_demo, sample_07, sample_08)
+
+//Run a SQL query on the temp table.
+scala> sqlContext.sql("select * from temppeoplenewdataframetable where name like 'Clouderan'").collect()
+res7: Array[org.apache.spark.sql.Row] = Array([[San Francisco,California],Clouderan])
+```
+
+###### Writing JSON
+
+Similar to the Parquet files, we can also save the DataFrames in JSON dataset format.
+
+For this example, we will use the dataframe 'peopleNewDataFrame' that was created in the previous section ()
+
+```
+
+//Write the DataFram as a JSON file in HDFS
+scala> peopleNewDataFrame.write.json("/user/gmedasani/data/examples-output/peopleNewDataFrame-json-output")
+
+
+//Check HDFS Files
+[gmedasani@intel-1 resources]$ hdfs dfs -ls /user/gmedasani/data/examples-output/peopleNewDataFrame-json-output
+-rw-r--r--   3 gmedasani gmedasani         60 2016-03-16 12:30 /user/gmedasani/data/examples-output/peopleNewDataFrame-json-output/part-r-00002-5c4a8906-f686-4e54-b2ab-d5bd23030b19
+-rw-r--r--   3 gmedasani gmedasani         66 2016-03-16 12:30 /user/gmedasani/data/examples-output/peopleNewDataFrame-json-output/part-r-00005-5c4a8906-f686-4e54-b2ab-d5bd23030b19
+-rw-r--r--   3 gmedasani gmedasani         77 2016-03-16 12:30 /user/gmedasani/data/examples-output/peopleNewDataFrame-json-output/part-r-00007-5c4a8906-f686-4e54-b2ab-d5bd23030b19
+
+[gmedasani@intel-1 resources]$ hdfs dfs -cat /user/gmedasani/data/examples-output/peopleNewDataFrame-json-output/part-r-00002-5c4a8906-f686-4e54-b2ab-d5bd23030b19
+{"address":{"city":"Columbus","state":"Ohio"},"name":"Yin"}
+
+[gmedasani@intel-1 resources]$ hdfs dfs -cat /user/gmedasani/data/examples-output/peopleNewDataFrame-json-output/part-r-00005-5c4a8906-f686-4e54-b2ab-d5bd23030b19
+{"address":{"city":"Chicago","state":"Illinois"},"name":"Edward"}
+
+[gmedasani@intel-1 resources]$ hdfs dfs -cat /user/gmedasani/data/examples-output/peopleNewDataFrame-json-output/part-r-00007-5c4a8906-f686-4e54-b2ab-d5bd23030b19
+{"address":{"city":"San Francisco","state":"California"},"name":"Clouderan"}
+
+```
+
+Note: We will cover JDBC Data source in slides.
+
+
+Visit [Compatibility with Apache Hive Documentation]
+(http://spark.apache.org/docs/1.5.0/sql-programming-guide.html#compatibility-with-apache-hive) for additional information on SparkSQL and Hive compatibility.
+
+
+

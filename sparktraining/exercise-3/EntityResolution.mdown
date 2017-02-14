@@ -1,0 +1,275 @@
+
+Text Analytics and Entity Resolution
+====================================
+
+### Introduction
+
+Entity Resolution is a common, yet difficult problem in data cleaning and data integration.This lab will demonstrate how we can use Apache Spark to apply powerful and scalable text analysis techniques and perform entity resolution across two datasets of commercial products
+
+### What is Entity Resolution?
+
+Entity Resolution, or "[Record linkage](https://en.wikipedia.org/wiki/Record_linkage)" is the term used by statisticians, epidemiologists, and historians, among others, to describe the process of joining records from one data source with another that describe the same entity. 
+
+Our terms with the same meaning include, "entity disambiguation/linking", duplicate detection", "deduplication", "record matching", "(reference) reconciliation", "object identification", "data/information integration", and "conflation".
+
+Entity Resolution (ER) refers to the task of finding records in a dataset that refer to the same entity across different data sources (e.g., data files, books, websites, databases). 
+
+ER is necessary when joining datasets based on entities that may or may not share a common identifier (e.g., database key, URI, National identification number), as may be the case due to differences in record shape, storage location, and/or curator style or preference. A dataset that has undergone ER may be referred to as being cross-linked
+
+#### DataSet
+
+Dataset for this assignment is from the [metric-learning](https://code.google.com/p/metric-learning/) project.
+
+* Google.csv -  the Google Products dataset
+* Amazon.csv - the Amazon dataset
+* Google_small.csv - 200 records sampled from the Google data
+* Amazon_small.csv - 200 records sampled from the Amazon data
+* Amazon_Google_perfectMapping.csv - the "gold standard" mapping
+* stopwords.txt - a list of common English words
+
+
+#### DataSet format
+
+The file format of an Amazon line is:  
+> "id","title","description","manufacturer","price”
+
+The file format of a Google line is
+> `"id","name","description","manufacturer","price”
+
+### Part 1: Load the Parse the datasets correctly
+
+Use the utility class provided ProductDataParserUtil to parse the data in the right format. 
+
+Function parseDatafileLine() returns an RDD of type ((productID,productDetails),successCode)
+
+* successCode (0) – means it is the header row/record
+* successCode (1) – means it is a valid record
+* successCode (-1) – means it is an invalid record
+
+You can use the successCodes to create a valid RDD for each data source.
+
+***For example: validAmazonSmallRDD, validGoogleSmallRDD, validGoogleRDD, validAmazonRDD.***
+
+Each of these RDDs should be of the type (productID,productDetails), we can drop the success code after the filtering. 
+
+##### Verify
+
+```
+Google_small.csv - Read 201 lines, successfully parsed 200 lines, failed to parse 0 lines 
+Google.csv - Read 3227 lines, successfully parsed 3226 lines, failed to parse 0 lines 
+Amazon_small.csv - Read 201 lines, successfully parsed 200 lines, failed to parse 0 lines 
+Amazon.csv - Read 1364 lines, successfully parsed 1363 lines, failed to parse 0 lines
+```
+
+Once the data is parsed correctly please take some time to examine the data and understand how the data looks like.
+
+### Part 2: Create tokens from documents
+
+#### Entity Resolution as Text Similarity - Bag of Words
+
+A simple approach to entity resolution is to treat all records as strings and compute their similarity with a string distance function. 
+
+In this part, we will build some components for performing bag-of-words text-analysis, and then use them to compute record similarity.
+
+Bag-of-Words is a conceptually simple yet powerful approach to text analysis.The idea is to treat strings, a.k.a. documents, as unordered collections of words, or tokens, i.e., as bags of words.
+
+**Note on terminology**: a "token" is the result of parsing the document down to the elements we consider "atomic" for the task at hand.  
+
+Bag of words techniques all apply to any sort of token, so when we say "bag-of-words" we really mean "bag-of-tokens," strictly speaking.Tokens become the atomic unit of text comparison. If we want to compare two documents, we count how many tokens they share in common.
+
+If we want to search for documents with keyword queries (this is what Google does), then we turn the keywords into tokens and find documents that contain them. The power of this approach is that it makes string comparisons insensitive to small differences that probably do not affect meaning much, for example, punctuation and word order.
+
+[Bag-of-words Model](https://en.wikipedia.org/wiki/Bag-of-words_model)
+
+
+#### Creating Bag-of-Words
+
+Use the utility function **tokenize()** provided in **ProductDataParserUtil** class to tokenize the productDetails part of the validRDDs for each datasets.
+
+To keep the project run times faster, we will just tokenize the **validGoogleSmallRDD** and **validAmazonSmallRDD** for now.
+
+Output of this process should be two RDDs **amazonSmallTokensRDD** and **googleSmallTokensRDD**
+
+##### Verify
+
+Total Number of tokens in the *amazonSmallTokensRDD*  and *googleSmallTokensRDD* 
+
+There are **22520** tokens in the combined datasets 
+
+
+### Part 3: Calculate TF-IDF weights for words
+
+Bag-of-words comparisons are not very good when all tokens are treated the same: some tokens are more important than others. 
+
+Weights give us a way to specify which tokens to favor. With weights, when we compare documents, instead of counting common tokens, we sum up the weights of common tokens. 
+
+A good heuristic for assigning weights is called **"Term-Frequency/Inverse-Document-Frequency,"** or **TF-IDF(tfidf)** for short.
+
+#### Term Frequency
+
+TF rewards tokens that appear many times in the same document. 
+
+It is computed as the frequency of a token in a document, that is, if document **d** contains **100** tokens and token **t** appears in **d** **5** times, then the **TF** weight of t in d is 5/100 = 1/20. 
+
+The intuition for TF is that if a word occurs often in a document, then it is more important to the meaning of the document.
+
+#### Inverse Document Frequency
+
+IDF rewards tokens that are rare overall in a dataset. The intuition is that it is more significant if two documents share a rare word than a common one.
+
+IDF weight for a token, **t**, in a set of documents, **U**, is computed as follows:
+
+* Let N be the total number of documents in U
+* Find n(t), the number of documents in U that contain t 
+* Then IDF(t) = N/n(t).
+
+Note that **n(t)/N** is the frequency of **t** in **U**, and **N/n(t)** is the inverse frequency.
+
+
+#### TF-IDF Note on Terminology 
+
+Sometimes token weights depend on the document the token belongs to, that is, the same token may have a different weight when it's found in different documents.  We call these weights **local** weights. TF is an example of a local	 weight, because it depends on the length of the source.  
+
+On the other hand, some token weights only depend on the token, and are the same everywhere that token is found.  We call these weights **global**, and IDF is one such weight.
+
+**[TF-IDF](https://en.wikipedia.org/wiki/Tf%E2%80%93idf)** : Finally, to bring it all together, the total TF-IDF weight for a token in a document is the product of its TF and IDF weights. 
+
+#### Create a function called termFrequency()
+
+This function will take a list of tokens 
+Function should return the frequency for each token in the list. Formula to calculate the term frequency is in the Part 3: Term Frequency slide
+
+This is also easy to test. You can just pass a list of tokens into the function and manually verify if it is printing the right frequency.
+
+
+For example: a list of ['quick','brown','fox','jumps','lazy','dog’] should return -
+
+```
+(brown, 0.16666666666666666), (lazy, 0.16666666666666666), (jumps,0.16666666666666666), (fox,0.16666666666666666), (dog,0.16666666666666666), (quick, 0.16666666666666666)
+```
+
+A list of [one,one,two] should return
+
+```
+(one,0.6666666666666666),(two,0.3333333333333333)
+```
+
+#### Create a combined Small dataset
+
+Create a *smallCorpusRDD* that is a combined dataset of *googleSmallTokensRDD* and *amazonSmallTokensRDD*
+
+You can use union for this.
+
+*smallCorpusRDD* should have a total of **400** records.
+
+
+#### Create a function called inverseDocumentFrequency()
+
+This function will take 
+> Args:        corpus (RDD): input corpus   
+> Returns:        RDD: a RDD of (token, IDF value)
+
+Hint: This also uses the concepts we saw in the wordCount and log analysis exercises
+
+
+#### Apply inverseDocumentFrequency() on smallCorpusRDD 
+
+Create an **idfSmallRDD** by applying *inverseDocumentFrequency()* on *smallCorpusRDD*
+
+To verify if your IDF is correct – run a count() on the smallCorpusRDD, you should see that a total of **4772** unique tokes in the idfSmallRDD 
+
+Collect all the idfs from idfSmallRDD into a variable called **idfSmallWeights** using the collectAsMap()
+
+
+Recall that the IDF weight for a token, t, in a set of documents, U, is computed as follows:
+
+* Let N be the total number of documents in U.
+* Find n(t), the number of documents in U that contain t.
+* Then IDF(t) = N/n(t).
+
+The steps your function should perform are:
+
+* Calculate N. Think about how you can calculate N from the input RDD.
+* Create an RDD (not a pair RDD) containing the unique tokens from each document in the input corpus. For each document, you should only include a token once, even if it appears multiple times in that document.
+* For each of the unique tokens, count how many times it appears in the document and then compute the IDF for that token: N/n(t)
+
+Use your idfs to compute the TF-IDF weights for all tokens in smallCorpusRDD (the combined small datasets).
+
+
+#### Verify:
+
+Print out 11 tokens with smallest IDF from the **idfSmallRDD**
+
+Correct answer should have the following tokes and idf weights
+
+```
+('software', 4.25531914893617), ('new', 6.896551724137931), ('features', 6.896551724137931), ('use', 7.017543859649122), ('complete', 7.2727272727272725), ('easy', 7.6923076923076925), ('create', 8.333333333333334), ('system', 8.333333333333334), ('cd', 8.333333333333334), ('1', 8.51063829787234), ('windows', 8.51063829787234)
+```
+
+#### Create a function called tfIDF()
+
+This function will take
+
+> Args:
+>> tokens (list of str): input list of tokens from tokenize
+
+>> idfs (Map[String,Float]): record to IDF value
+
+> Returns:
+>> tfidfs: A Map[String,Float] of tokens to TF-IDF values
+
+Create a RDD called **tfIDFSmallRDD** that contains the TF-IDFs for all the tokens in the *smallCorpusRDD*
+
+#### Verify
+
+We can look at the following record 'b000hkgj8k' from amazonSmallTokensRDD
+
+```
+tf_idfSmallRDD.filter(record => record._1 == "b000hkgj8k").collect().foreach(println)
+```
+
+You should see the following result
+
+```
+(autocad, 33.33333333333333),(autodesk: 8.333333333333332),(courseware: 66.66666666666666),(psg: 33.33333333333333),(2007: 3.5087719298245617),(customizing: 16.666666666666664),(interface: 3.0303030303030303)
+```
+
+### Part 4: Entity Resolution as a Text Similarity - Cosine Similarity
+
+Now we are ready to do text comparisons in a formal way. The metric of string distance we will use is called cosine similarity. We will treat each document as a vector in some high dimensional space. Then, to compare two documents we compute the cosine of the angle between their two document vectors. This is much easier than it sounds.
+
+The first question to answer is how do we represent documents as vectors? The answer is familiar: bag-of-words! We treat each unique token as a dimension, and treat token weights as magnitudes in their respective token dimensions. For example, suppose we use simple counts as weights, and we want to interpret the string "Hello, world! Goodbye, world!" as a vector. Then in the "hello" and "goodbye" dimensions the vector has value 1, in the "world" dimension it has value 2, and it is zero in all other dimensions.
+
+The next question is: given two vectors how do we find the cosine of the angle between them? Recall the formula for the dot product of two vectors:
+
+![Dot product of Two vectors](https://github.com/gdtm86/sparktraining/blob/master/exercise-3/images/dot-product.jpg)
+
+We can rearrange terms and solve for the cosine to find it is simply the normalized dot product of the vectors. With our vector model, the dot product and norm computations are simple functions of the bag-of-words document representations, so we now have a formal way to compute similarity.
+
+![Cosine Similarity between two vectors](https://github.com/gdtm86/sparktraining/blob/master/exercise-3/images/cosine-similarity.jpg)
+
+Setting aside the algebra, the geometric interpretation is more intuitive. The angle between two document vectors is small if they share many tokens in common, because they are pointing in roughly the same direction. For that case, the cosine of the angle will be large. Otherwise, if the angle is large (and they have few words in common), the cosine is small. Therefore, cosine similarity scales proportionally with our intuitive sense of similarity.
+
+
+#### Part 4b. Construct a Cartesian Product of all the records in the googleSmallTokenRDD and amazonSmallTokenRDD
+
+```
+val crossSmallRDD = googleSmallTokenRDD.cartesian(amazonSmallTokensRDD)
+```
+
+#### Part 4a. Implement the components of a cosineSimilarity function
+
+Implement the components of a cosineSimilarity function.
+
+The steps you should perform are:
+
+* Define a function dotprod() that takes two tfidf weights of type Map[String, Float] and produces the dot product of them, where the dot product is defined as the sum of the product of values for tokens that appear in both dictionaries
+* Define a function norm() that returns the square root of the dot product of a tfidf weight of type Map[String, Float] and itself
+* Define a function cossim() that returns the dot product of two tfidf weights of type Map[String,float] divided by the norm of the first Map[String,Float] and then by the norm of the second Map[String,Float]
+
+
+
+
+
+
+

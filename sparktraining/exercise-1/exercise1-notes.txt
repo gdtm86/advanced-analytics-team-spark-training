@@ -1,0 +1,16 @@
+    
+
+
+    def removePunctuation(text:String):String = {
+         /*
+         |   Removes punctuation, changes to lower case, and strips leading and trailing spaces.
+         |     Note:
+         |         Only spaces, letters, and numbers should be retained.  Other characters should should be
+         |         eliminated (e.g. it's becomes its).  Leading and trailing spaces should be removed after
+         |         punctuation is removed.
+         |     Args: text (str): A string.
+         |     Returns: str: The cleaned up string.
+         |  */
+
+         text.toLowerCase.replaceAll("""[\'?:._!,\(\)\[\];\"-\--\/\}\{]+""","").trim()
+      }
